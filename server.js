@@ -4,12 +4,14 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const config = require('./src/config');
 const { createStorage } = require('./src/storage');
+const { createAuth } = require('./src/auth');
 
 const PORT = config.port;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'state.json');
 const storage = createStorage({ seed: seedState });
+const auth = config.storageDriver === 'postgres' ? createAuth({ connectionString: config.databaseUrl, ssl: config.databaseSsl, secureCookies: config.nodeEnv === 'production' }) : null;
 
 const members = [
   { id: 'u1', name: 'Fernanda Rocha', initials: 'FR', role: 'Product Owner', color: '#6757d9' },
@@ -86,8 +88,8 @@ function writeState(state) {
   return state;
 }
 
-function json(res, status, data) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+function json(res, status, data, headers={}) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(data));
 }
 
@@ -119,13 +121,39 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
     if (url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'Orbit Projects' });
-    if (url.pathname === '/api/state' && req.method === 'GET') return json(res, 200, await storage.getState());
+    if (url.pathname === '/api/auth/me' && req.method === 'GET') {
+      if (!auth) return json(res, 200, { authenticated:true, setupRequired:false, account:{name:'Usuário local',roleId:'admin',memberId:'u1'} });
+      const account=await auth.authenticate(req);return json(res,200,{authenticated:!!account,setupRequired:account?false:await auth.setupRequired(),account});
+    }
+    if (url.pathname === '/api/auth/setup' && req.method === 'POST') {
+      if (!auth) return json(res,400,{error:'Autenticação requer PostgreSQL.'});
+      const data=await parseBody(req),state=await storage.getState(),member=state.members.find(m=>m.id===state.currentUser)||state.members.find(m=>m.name!=='Sem responsável');
+      const result=await auth.setup({...data,memberId:member.id});
+      member.name=data.name.trim();member.initials=result.account.name.split(/\s+/).map(x=>x[0]).slice(0,2).join('').toUpperCase();member.role='Administrador';member.roleId='admin';state.currentUser=member.id;
+      await storage.saveState(state,Number(state.meta.version));
+      return json(res,201,{account:result.account},{'Set-Cookie':auth.cookie(result.token,result.expires)});
+    }
+    if (url.pathname === '/api/auth/login' && req.method === 'POST') {
+      if (!auth) return json(res,400,{error:'Autenticação requer PostgreSQL.'});
+      const result=await auth.login(await parseBody(req));return json(res,200,{account:result.account},{'Set-Cookie':auth.cookie(result.token,result.expires)});
+    }
+    if (url.pathname === '/api/auth/logout' && req.method === 'POST') {if(auth)await auth.logout(req);return json(res,200,{ok:true},{'Set-Cookie':auth?auth.clearCookie():''})}
+    const account=auth?await auth.authenticate(req):{memberId:'u1',roleId:'admin',name:'Usuário local'};
+    if (url.pathname.startsWith('/api/')&&!account) return json(res,401,{error:'Faça login para continuar.'});
+    if (url.pathname === '/api/auth/accounts' && req.method === 'GET') {if(account.roleId!=='admin')return json(res,403,{error:'Acesso restrito a administradores.'});return json(res,200,{accounts:await auth.listAccounts()})}
+    if (url.pathname === '/api/auth/accounts' && req.method === 'POST') {if(account.roleId!=='admin')return json(res,403,{error:'Acesso restrito a administradores.'});return json(res,201,{account:await auth.createAccount(await parseBody(req))})}
+    const accountRoute=url.pathname.match(/^\/api\/auth\/accounts\/([^/]+)$/);
+    if(accountRoute&&req.method==='PUT'){if(account.roleId!=='admin')return json(res,403,{error:'Acesso restrito a administradores.'});const data=await parseBody(req);return json(res,200,await auth.updateRole(decodeURIComponent(accountRoute[1]),data.roleId))}
+    if(accountRoute&&req.method==='DELETE'){if(account.roleId!=='admin')return json(res,403,{error:'Acesso restrito a administradores.'});return json(res,200,await auth.deactivate(decodeURIComponent(accountRoute[1]),account.id))}
+    if (url.pathname === '/api/state' && req.method === 'GET') {const state=await storage.getState();return json(res,200,{...state,currentUser:account.memberId})}
     if (url.pathname === '/api/state' && req.method === 'PUT') {
+      if (account.roleId==='viewer') return json(res,403,{error:'Seu perfil possui acesso somente para leitura.'});
       const state = await parseBody(req);
       if (!Array.isArray(state.projects) || !Array.isArray(state.issues)) return json(res, 400, { error: 'Estado inválido' });
+      state.currentUser=account.memberId;
       return json(res, 200, await storage.saveState(state, Number(state.meta?.version || 0)));
     }
-    if (url.pathname === '/api/reset' && req.method === 'POST') return json(res, 200, await storage.reset());
+    if (url.pathname === '/api/reset' && req.method === 'POST') {if(account.roleId!=='admin')return json(res,403,{error:'Somente administradores podem restaurar os dados.'});return json(res, 200, await storage.reset())}
     if (req.method === 'GET' && serveStatic(req, res, url.pathname)) return;
     if (req.method === 'GET' && !url.pathname.startsWith('/api/')) return serveStatic(req, res, '/') || undefined;
     json(res, 404, { error: 'Rota não encontrada' });
@@ -136,12 +164,14 @@ const server = http.createServer(async (req, res) => {
 
 async function start() {
   await storage.initialize();
+  if(auth)await auth.initialize();
   server.listen(PORT, () => console.log(`Orbit Projects disponível em http://localhost:${PORT} usando ${config.storageDriver}`));
 }
 
 async function shutdown() {
   server.close(async () => {
     await storage.close();
+    if(auth)await auth.close();
     process.exit(0);
   });
 }
