@@ -1,0 +1,325 @@
+const app = document.querySelector('#app');
+const toastRoot = document.querySelector('#toast-root');
+let state;
+let route = location.hash.slice(1) || 'dashboard';
+let selectedProject = localStorage.getItem('orbit.project') || 'p1';
+let selectedIssue = null;
+let modal = null;
+let filters = { query: '', assignee: '', priority: '' };
+let saveTimer;
+
+const icons = {
+  dashboard:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="4" rx="2"/><rect x="14" y="11" width="7" height="10" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/></svg>',
+  board:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="5" height="16" rx="2"/><rect x="10" y="4" width="5" height="10" rx="2"/><rect x="17" y="4" width="4" height="13" rx="2"/></svg>',
+  backlog:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>',
+  roadmap:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3v18M19 3v18M5 7h9v4h5M5 15h6v4h8"/></svg>',
+  reports:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  projects:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v11H3z"/><path d="M3 7V4h7l2 3"/></svg>',
+  team:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-4 2-6 6-6s6 2 6 6M16 5c3 0 4 2 4 4s-1 4-4 4M17 15c3 0 4 2 4 5"/></svg>',
+  settings:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A7 7 0 0 0 15 6l-.4-2.6h-4L10 6a7 7 0 0 0-1.5 1L6 6.1 4 9.5 6.1 11A7 7 0 0 0 6 12c0 .4 0 .7.1 1L4 14.5 6 18l2.5-1a7 7 0 0 0 1.5 1l.5 2.6h4L15 18a7 7 0 0 0 1.5-1l2.4 1 2-3.5-2-1.5c0-.3.1-.6.1-1Z"/></svg>',
+  search:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>',
+  plus:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
+  close:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M18 6 6 18"/></svg>',
+  bell:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>'
+};
+
+const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const id = prefix => prefix + Math.random().toString(36).slice(2, 9);
+const project = projectId => state.projects.find(p => p.id === (projectId || selectedProject));
+const member = userId => state.members.find(m => m.id === userId) || state.members.at(-1);
+const status = statusId => state.statuses.find(s => s.id === statusId);
+const sprint = sprintId => state.sprints.find(s => s.id === sprintId);
+const projectIssues = () => state.issues.filter(i => i.projectId === selectedProject);
+const fmtDate = date => date ? new Intl.DateTimeFormat('pt-BR',{day:'2-digit',month:'short'}).format(new Date(date + (date.length === 10 ? 'T12:00:00' : ''))) : 'Sem data';
+const fmtTime = date => new Intl.RelativeTimeFormat('pt-BR',{numeric:'auto'}).format(-Math.max(1,Math.round((Date.now()-new Date(date))/86400000)),'day');
+const priorityLabel = {highest:'Urgente',high:'Alta',medium:'Média',low:'Baixa'};
+const prioritySymbol = {highest:'↑↑',high:'↑',medium:'–',low:'↓'};
+const typeLabel = {story:'História',bug:'Bug',task:'Tarefa',epic:'Épico',incident:'Incidente',request:'Solicitação'};
+
+function migrateState() {
+  state.templates ||= [
+    {id:'tpl-scrum',name:'Scrum padrão',type:'scrum',description:'Backlog, sprints e entregas iterativas'},
+    {id:'tpl-kanban',name:'Kanban padrão',type:'kanban',description:'Fluxo contínuo com limites WIP'},
+    {id:'tpl-hybrid',name:'Híbrido',type:'hybrid',description:'Planejamento por sprint com fluxo contínuo'}
+  ];
+  state.customIssueTypes ||= [];
+  state.savedFilters ||= [];
+  state.automations ||= [];
+  state.documents ||= [];
+  state.testCases ||= [];
+  state.integrations ||= [
+    {id:'github',name:'GitHub',enabled:false,status:'Não configurado'},
+    {id:'gitlab',name:'GitLab',enabled:false,status:'Não configurado'},
+    {id:'slack',name:'Slack',enabled:false,status:'Não configurado'},
+    {id:'teams',name:'Microsoft Teams',enabled:false,status:'Não configurado'},
+    {id:'confluence',name:'Confluence',enabled:false,status:'Não configurado'}
+  ];
+  state.roles ||= [
+    {id:'admin',name:'Administrador',permissions:['manage','edit','delete','view']},
+    {id:'member',name:'Membro',permissions:['edit','view']},
+    {id:'viewer',name:'Leitor',permissions:['view']}
+  ];
+  state.groups ||= [];
+  state.teams ||= [];
+  state.projects.forEach(p=>{p.management ||= 'team';p.templateId ||= null;p.type ||= 'kanban'});
+  state.members.forEach((m,n)=>{m.roleId ||= n===0?'admin':'member'});
+  state.issues.forEach(i=>{i.parentId ??= null;i.links ||= [];i.originalEstimate ||= 0;i.customFields ||= {};i.watchers ||= [];i.order ||= 999});
+}
+
+async function load() {
+  try {
+    const response = await fetch('/api/state');
+    if (!response.ok) throw new Error('Falha ao carregar os dados');
+    state = await response.json();
+    migrateState();
+    if (!project()) selectedProject = state.projects.find(p => !p.archived)?.id;
+    render();
+  } catch (error) {
+    app.innerHTML = `<div class="boot"><span class="logo-mark">!</span><h2>Não foi possível abrir o Orbit</h2><p>${esc(error.message)}</p><button class="btn" onclick="location.reload()">Tentar novamente</button></div>`;
+  }
+}
+
+function persist(message) {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      const response = await fetch('/api/state',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(state)});
+      const saved = await response.json();
+      if (!response.ok) throw new Error(saved.error||'Não foi possível salvar');
+      state.meta = saved.meta;
+      if (message) toast(message);
+    } catch (error) { toast(error.message||'Não foi possível salvar a alteração','error'); }
+  }, 180);
+}
+
+function toast(text,type='') {
+  const el = document.createElement('div'); el.className=`toast ${type}`; el.textContent=text; toastRoot.append(el);
+  setTimeout(()=>el.remove(),2800);
+}
+
+function avatar(userId, small=false) {
+  const u=member(userId); return `<span class="avatar ${small?'small':''}" style="background:${u.color}" title="${esc(u.name)}">${esc(u.initials)}</span>`;
+}
+
+function profileAvatar() {
+  return '<span class="avatar" style="background:#6757d9" title="Minha conta">U</span>';
+}
+
+function navItem(name,label,icon,badge='') {
+  return `<button class="nav-item ${route===name?'active':''}" data-route="${name}">${icons[icon]}<span>${label}</span>${badge!==''?`<b class="badge">${badge}</b>`:''}</button>`;
+}
+
+function shell(content) {
+  const p=project(); const open=projectIssues().filter(i=>i.status!=='done').length;
+  return `<div class="app-shell">
+    <header class="topbar"><div class="brand"><span class="logo-mark">O</span><span class="brand-name">Orbit Projects</span></div>
+      <button class="workspace-switcher" data-route="projects"><span>${esc(state.meta.workspace)}</span><span class="muted">/</span><i class="project-icon" style="background:${p.color};width:26px;height:26px;border-radius:8px;font-size:10px">${p.key}</i><span>${esc(p.name)}</span></button>
+      <div class="global-search">${icons.search}<input id="global-search" placeholder="Buscar tarefa, projeto ou pessoa…" value="${esc(filters.query)}"></div>
+      <div class="top-actions"><button class="btn primary" data-open="issue">${icons.plus} Criar</button><button class="icon-btn" title="Notificações">${icons.bell}</button>${profileAvatar()}</div>
+    </header>
+    <aside class="sidebar"><nav>
+      <div class="nav-label">Workspace</div>${navItem('dashboard','Visão geral','dashboard')}${navItem('board','Quadro','board',open)}${navItem('backlog','Backlog','backlog')}${navItem('roadmap','Roadmap','roadmap')}${navItem('reports','Relatórios','reports')}
+      <div class="nav-label secondary-nav">Organização</div>${navItem('projects','Projetos','projects')}${navItem('team','Equipe','team')}${navItem('admin','Central','settings')}${navItem('settings','Configurações','settings')}
+    </nav><div class="sidebar-bottom"><div class="sidebar-user">${profileAvatar()}<div><strong>Usuário</strong><div class="muted small-text">Minha conta</div></div></div></div></aside>
+    <main class="main">${content}</main>
+  </div>${selectedIssue?renderDrawer():''}${modal?renderModal():''}`;
+}
+
+function pageHeader(title,subtitle,actions='') { return `<header class="page-header"><div><h1 class="page-title">${title}</h1><p class="page-subtitle">${subtitle}</p></div><div class="page-actions">${actions}</div></header>`; }
+
+function render() {
+  const views={dashboard:renderDashboard,board:renderBoard,backlog:renderBacklog,roadmap:renderRoadmap,reports:renderReports,projects:renderProjects,team:renderTeam,admin:renderAdmin,settings:renderSettings,search:renderSearch};
+  app.innerHTML=shell((views[route]||views.dashboard)());
+  bindDragDrop();
+}
+
+function renderDashboard() {
+  const issues=state.issues, open=issues.filter(i=>i.status!=='done').length, done=issues.filter(i=>i.status==='done').length;
+  const overdue=issues.filter(i=>i.status!=='done'&&i.due&&new Date(i.due)<new Date(new Date().toDateString())).length;
+  const points=issues.filter(i=>i.status==='done').reduce((n,i)=>n+(+i.points||0),0);
+  return `<div class="page">${pageHeader('Olá, vamos começar!!!','Aqui está o pulso dos seus projetos hoje.',`<button class="btn" data-route="reports">Ver relatórios</button><button class="btn primary" data-open="issue">${icons.plus} Nova tarefa</button>`)}
+  <section class="kpi-grid">${kpi('Trabalho em aberto',open,'+4 nesta semana','board')}${kpi('Concluídas',done,'↑ 18% no período','reports')}${kpi('Pontos entregues',points,'Últimas 4 semanas','roadmap')}${kpi('Itens atrasados',overdue,overdue?'Precisam de atenção':'Tudo em dia','backlog')}</section>
+  <div class="grid-2"><div class="stack"><section class="panel"><div class="panel-header"><div><h2 class="panel-title">Projetos ativos</h2><div class="panel-subtitle">Progresso das iniciativas em andamento</div></div><button class="link-btn" data-route="projects">Ver todos</button></div>${state.projects.filter(p=>!p.archived).map(renderProjectRow).join('')}</section>
+  <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Visão do trabalho</h2><div class="panel-subtitle">Tarefas por status em todos os projetos</div></div></div>${statusOverview(issues)}</section></div>
+  <div class="stack"><section class="panel"><div class="panel-header"><h2 class="panel-title">Atividade recente</h2></div>${state.activity.slice(0,6).map(a=>`<div class="activity">${avatar(a.user,true)}<div><p><strong>${esc(member(a.user).name.split(' ')[0])}</strong> ${esc(a.text)}</p><time>${fmtTime(a.date)}</time></div></div>`).join('')}</section>
+  <section class="panel"><div class="panel-header"><h2 class="panel-title">Próximas entregas</h2></div>${state.releases.map(r=>`<div style="margin:15px 0"><div style="display:flex;justify-content:space-between;margin-bottom:7px"><strong>${esc(r.name)}</strong><span class="muted small-text">${fmtDate(r.date)}</span></div><div class="progress"><span style="width:${r.progress}%;background:${project(r.projectId).color}"></span></div></div>`).join('')}</section></div></div></div>`;
+}
+
+function kpi(label,value,trend,icon) { return `<article class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-trend">${trend}</div><span class="kpi-icon">${icons[icon]}</span></article>`; }
+function renderProjectRow(p) { const items=state.issues.filter(i=>i.projectId===p.id), done=items.filter(i=>i.status==='done').length, pct=items.length?Math.round(done/items.length*100):0;return `<div class="project-row"><div class="project-id"><span class="project-icon" style="background:${p.color}">${p.key}</span><div class="ellipsis"><strong>${esc(p.name)}</strong><div class="small-text muted ellipsis">${esc(p.description)}</div></div></div><div>${avatar(p.lead,true)} <span class="small-text">${esc(member(p.lead).name.split(' ')[0])}</span></div><div class="small-text muted">${items.length} itens</div><div><div class="small-text" style="text-align:right;margin-bottom:5px">${pct}%</div><div class="progress"><span style="width:${pct}%;background:${p.color}"></span></div></div></div>`; }
+function statusOverview(issues) { const max=Math.max(...state.statuses.map(s=>issues.filter(i=>i.status===s.id).length),1); return `<div style="display:grid;gap:13px">${state.statuses.map(s=>{const n=issues.filter(i=>i.status===s.id).length;return `<div style="display:grid;grid-template-columns:120px 1fr 28px;align-items:center;gap:10px"><span class="small-text">${s.name}</span><div class="progress"><span style="width:${n/max*100}%;background:${s.color}"></span></div><strong>${n}</strong></div>`}).join('')}</div>`; }
+
+function projectPicker() { return `<select class="select" data-project-picker>${state.projects.filter(p=>!p.archived).map(p=>`<option value="${p.id}" ${p.id===selectedProject?'selected':''}>${p.key} · ${esc(p.name)}</option>`).join('')}</select>`; }
+function filterToolbar(view) { return `<div class="toolbar"><div class="view-tabs"><button class="view-tab ${view==='board'?'active':''}" data-route="board">Quadro</button><button class="view-tab ${view==='backlog'?'active':''}" data-route="backlog">Backlog</button></div><input class="field search-field" data-filter="query" placeholder="Filtrar tarefas…" value="${esc(filters.query)}"><select class="select" data-filter="assignee"><option value="">Responsável: todos</option>${state.members.map(m=>`<option value="${m.id}" ${filters.assignee===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select><select class="select" data-filter="priority"><option value="">Prioridade: todas</option>${Object.entries(priorityLabel).map(([v,l])=>`<option value="${v}" ${filters.priority===v?'selected':''}>${l}</option>`).join('')}</select><button class="btn small" data-save-filter>Salvar filtro</button>${state.savedFilters.map(f=>`<button class="quick-filter" data-apply-filter="${f.id}">${esc(f.name)}</button>`).join('')}</div>`; }
+function filteredIssues(issues) { const q=filters.query.toLowerCase();return issues.filter(i=>(!q||`${i.key} ${i.title} ${i.labels.join(' ')}`.toLowerCase().includes(q))&&(!filters.assignee||i.assignee===filters.assignee)&&(!filters.priority||i.priority===filters.priority)); }
+
+function renderBoard() {
+  const p=project(),issues=filteredIssues(projectIssues());
+  return `<div class="page">${pageHeader(esc(p.name),`${p.type==='scrum'?'Scrum':'Kanban'} · Quadro de trabalho`,`${projectPicker()}<button class="btn primary" data-open="issue">${icons.plus} Criar tarefa</button>`)}${filterToolbar('board')}<section class="board">${state.statuses.map(s=>`<div class="column" data-status="${s.id}"><div class="column-head"><span class="status-dot" style="background:${s.color}"></span>${s.name}<span class="column-count">${issues.filter(i=>i.status===s.id).length}</span>${s.limit?`<span class="wip">WIP ${issues.filter(i=>i.status===s.id).length}/${s.limit}</span>`:''}</div><div class="column-cards">${issues.filter(i=>i.status===s.id).sort((a,b)=>a.order-b.order).map(issueCard).join('')}</div><button class="add-card" data-open="issue" data-status-prefill="${s.id}">＋ Adicionar tarefa</button></div>`).join('')}</section></div>`;
+}
+function issueCard(i) { return `<article class="issue-card" draggable="true" data-issue="${i.id}"><div class="card-top"><span class="issue-type type-${i.type}">${typeLabel[i.type]}</span><span class="priority" title="${priorityLabel[i.priority]}">${prioritySymbol[i.priority]}</span></div><div class="card-title">${esc(i.title)}</div><div class="card-bottom"><span class="issue-key">${i.key}</span>${i.points?`<span class="points">${i.points}</span>`:''}${i.labels[0]?`<span class="label">${esc(i.labels[0])}</span>`:''}${avatar(i.assignee,true)}</div></article>`; }
+
+function renderBacklog() {
+  const p=project(),active=state.sprints.filter(s=>s.projectId===p.id&&s.status==='active'),planned=state.sprints.filter(s=>s.projectId===p.id&&s.status==='planned'),unplanned=filteredIssues(projectIssues().filter(i=>!i.sprintId));
+  const blocks=[...active,...planned].map(s=>sprintBlock(s,filteredIssues(projectIssues().filter(i=>i.sprintId===s.id)))).join('');
+  return `<div class="page">${pageHeader('Backlog',`Planeje e priorize o trabalho de ${esc(p.name)}`,`${projectPicker()}<button class="btn" data-open="sprint">${icons.plus} Sprint</button><button class="btn primary" data-open="issue">${icons.plus} Tarefa</button>`)}${filterToolbar('backlog')}<div class="backlog-layout"><div>${blocks}${sprintBlock(null,unplanned)}</div><aside><section class="panel"><h3 class="panel-title">Resumo</h3><div style="margin-top:16px">${statusOverview(projectIssues())}</div></section><section class="panel" style="margin-top:14px"><h3 class="panel-title">Estimativa</h3><div class="kpi-value">${projectIssues().reduce((n,i)=>n+(+i.points||0),0)}</div><div class="muted small-text">pontos no projeto</div></section></aside></div></div>`;
+}
+function sprintBlock(s,issues) { const isBacklog=!s;return `<section class="sprint-block"><header class="sprint-head"><div><span class="sprint-name">${isBacklog?'Backlog':esc(s.name)}</span><span class="sprint-meta">${issues.length} itens · ${issues.reduce((n,i)=>n+(+i.points||0),0)} pontos${s?` · ${fmtDate(s.start)}—${fmtDate(s.end)}`:''}</span>${s?.goal?`<div class="small-text muted" style="margin-top:4px">Meta: ${esc(s.goal)}</div>`:''}</div>${s?`<div class="management-actions"><button class="btn small" data-edit-sprint="${s.id}">Editar</button><button class="btn small danger" data-delete-sprint="${s.id}">Excluir</button></div>`:''}</header><div class="backlog-drop" data-sprint="${s?.id||''}">${issues.map(issueRow).join('')||`<div class="empty small-text">Arraste tarefas para cá</div>`}</div></section>`; }
+function issueRow(i) { return `<div class="issue-list-row" draggable="true" data-issue="${i.id}"><span class="type-icon" style="background:${i.type==='bug'?'var(--red)':i.type==='story'?'var(--green)':'var(--blue)'}">${i.type==='bug'?'B':i.type==='story'?'H':'T'}</span><strong class="small-text">${i.key}</strong><span class="ellipsis">${esc(i.title)}</span><span class="status-pill" style="color:${status(i.status).color}">${status(i.status).name}</span><span class="small-text muted">${priorityLabel[i.priority]}</span>${avatar(i.assignee,true)}</div>`; }
+
+function renderRoadmap() {
+  const p=project(), epics=[...new Set(projectIssues().map(i=>i.epic).filter(Boolean))];
+  return `<div class="page">${pageHeader('Roadmap',`Planejamento de entregas e dependências de ${esc(p.name)}`,`${projectPicker()}<button class="btn" data-open="issue" data-type-prefill="epic">${icons.plus} Épico</button>`)}<section class="panel roadmap"><div class="timeline-head"><div>Iniciativa</div><div>Jul</div><div>Ago</div><div>Set</div><div>Out</div></div>${epics.map((e,n)=>{const items=projectIssues().filter(i=>i.epic===e),done=items.filter(i=>i.status==='done').length,pct=items.length?Math.round(done/items.length*100):0;return `<div class="timeline-row"><div class="timeline-name">${esc(e)}<div class="muted small-text">${done}/${items.length} concluídas</div></div><div class="timeline-track"><div class="timeline-bar" style="left:${5+n*9}%;width:${32+n*4}%;background:${['#6757d9','#1f8f75','#d06b38','#3478c9'][n%4]}">${pct}% concluído</div></div></div>`}).join('')||'<div class="empty">Crie tarefas com um épico para montar o roadmap.</div>'}</section><div class="grid-2" style="margin-top:18px"><section class="panel"><h2 class="panel-title">Releases</h2>${state.releases.filter(r=>r.projectId===p.id).map(r=>`<div style="margin-top:18px"><div style="display:flex;justify-content:space-between"><strong>${esc(r.name)}</strong><span>${fmtDate(r.date)}</span></div><div class="progress" style="margin-top:9px"><span style="width:${r.progress}%"></span></div></div>`).join('')||'<div class="empty">Nenhuma release planejada.</div>'}</section><section class="panel"><h2 class="panel-title">Saúde do plano</h2><div class="kpi-value">${epics.length}</div><div class="muted">iniciativas em acompanhamento</div></section></div></div>`;
+}
+
+function renderReports() {
+  const issues=projectIssues(),counts=state.statuses.map(s=>issues.filter(i=>i.status===s.id).length),max=Math.max(...counts,1),done=issues.filter(i=>i.status==='done'),totalPoints=issues.reduce((n,i)=>n+(+i.points||0),0),donePoints=done.reduce((n,i)=>n+(+i.points||0),0);
+  const weekly=[8,13,11,18,15,donePoints||4];
+  return `<div class="page">${pageHeader('Relatórios','Métricas de fluxo, entrega e distribuição do trabalho',projectPicker())}<div class="kpi-grid">${kpi('Conclusão',`${issues.length?Math.round(done.length/issues.length*100):0}%`,'Itens finalizados','reports')}${kpi('Pontos concluídos',donePoints,`de ${totalPoints} planejados`,'roadmap')}${kpi('Cycle time médio','3,4d','↓ 0,6d no período','board')}${kpi('Throughput',done.length,'itens no período','backlog')}</div><div class="grid-2"><section class="panel"><div class="panel-header"><div><h2 class="panel-title">Velocidade</h2><div class="panel-subtitle">Pontos concluídos por período</div></div></div><div class="chart">${weekly.map((v,n)=>`<div class="bar-group"><span class="bar" style="height:${v/Math.max(...weekly)*100}%"></span><span class="bar secondary" style="height:${Math.min(v+5,25)/25*100}%"></span><span class="bar-label">S${n+7}</span></div>`).join('')}</div></section><section class="panel"><div class="panel-header"><h2 class="panel-title">Distribuição</h2></div><div class="donut" data-label="${issues.length} itens"></div><div class="legend">${state.statuses.map(s=>`<span style="--c:${s.color}">${s.name}</span>`).join('')}</div></section></div><div class="grid-2" style="margin-top:18px"><section class="panel"><h2 class="panel-title">Trabalho por responsável</h2><table class="table"><thead><tr><th>Pessoa</th><th>Itens</th><th>Pontos</th><th>Concluído</th></tr></thead><tbody>${state.members.slice(0,-1).map(m=>{const own=issues.filter(i=>i.assignee===m.id);return `<tr><td>${avatar(m.id,true)} &nbsp;${esc(m.name)}</td><td>${own.length}</td><td>${own.reduce((n,i)=>n+(+i.points||0),0)}</td><td>${own.filter(i=>i.status==='done').length}</td></tr>`}).join('')}</tbody></table></section><section class="panel"><h2 class="panel-title">Fluxo atual</h2><div style="margin-top:20px">${statusOverview(issues)}</div></section></div></div>`;
+}
+
+function renderProjects() {
+  const rows=(projects,archived=false)=>projects.map(p=>{const items=state.issues.filter(i=>i.projectId===p.id),done=items.filter(i=>i.status==='done').length;return `<tr ${archived?'':`data-select-project="${p.id}"`}><td><div class="project-id"><span class="project-icon" style="background:${p.color}">${p.key}</span><div><strong>${esc(p.name)}</strong><div class="muted small-text">${esc(p.description)}</div></div></div></td><td style="text-transform:capitalize">${p.type}</td><td>${avatar(p.lead,true)} ${esc(member(p.lead).name)}</td><td>${items.length-done}</td><td style="min-width:130px"><div class="progress"><span style="width:${items.length?done/items.length*100:0}%;background:${p.color}"></span></div></td><td><div class="management-actions"><button class="btn small" data-edit-project="${p.id}">Editar</button><button class="btn small" data-clone-project="${p.id}">Clonar</button><button class="btn small" data-archive-project="${p.id}">${archived?'Restaurar':'Arquivar'}</button><button class="btn small danger" data-delete-project="${p.id}">Excluir</button></div></td></tr>`}).join('');
+  const active=state.projects.filter(p=>!p.archived), archived=state.projects.filter(p=>p.archived);
+  return `<div class="page">${pageHeader('Projetos','Organize produtos, operações e iniciativas em um só lugar',`<button class="btn primary" data-open="project">${icons.plus} Novo projeto</button>`)}<section class="panel table-scroll"><table class="table"><thead><tr><th>Projeto</th><th>Tipo</th><th>Líder</th><th>Trabalho aberto</th><th>Progresso</th><th>Ações</th></tr></thead><tbody>${rows(active)}</tbody></table></section>${archived.length?`<section class="panel table-scroll" style="margin-top:18px"><h2 class="panel-title" style="margin-bottom:12px">Projetos arquivados</h2><table class="table"><tbody>${rows(archived,true)}</tbody></table></section>`:''}</div>`;
+}
+function renderTeam() { return `<div class="page">${pageHeader('Equipe',`${state.members.length-1} pessoas colaborando no workspace`, `<button class="btn primary" data-open="member">${icons.plus} Convidar pessoa</button>`)}<div class="team-card-grid">${state.members.slice(0,-1).map(m=>{const own=state.issues.filter(i=>i.assignee===m.id&&i.status!=='done'),minutes=state.issues.flatMap(i=>i.worklogs||[]).filter(w=>w.user===m.id).reduce((n,w)=>n+w.minutes,0);return `<article class="team-card">${avatar(m.id)}<h3>${esc(m.name)}</h3><div class="muted">${esc(m.role)}</div><div style="display:flex;gap:24px;margin-top:20px"><div><strong>${own.length}</strong><div class="small-text muted">itens ativos</div></div><div><strong>${(minutes/60).toFixed(1)}h</strong><div class="small-text muted">registradas</div></div></div><div class="management-actions card-actions"><button class="btn small" data-edit-member="${m.id}">Editar</button><button class="btn small danger" data-delete-member="${m.id}">Remover</button></div></article>`}).join('')}</div></div>`; }
+function renderAdmin(){
+  const list=(items,kind,empty)=>items.length?items.map(item=>`<div class="admin-list-item"><div><strong>${esc(item.name||item.title)}</strong><div class="muted small-text">${esc(item.description||item.trigger||item.status||'')}</div></div><button class="inline-delete" data-delete-resource="${kind}:${item.id}">Excluir</button></div>`).join(''):`<div class="empty small-text">${empty}</div>`;
+  return `<div class="page">${pageHeader('Central da equipe','Automações, conhecimento, qualidade, integrações e acesso')}<div class="admin-grid">
+    <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Automações</h2><div class="panel-subtitle">Gatilhos e ações internas</div></div><button class="btn small" data-add-resource="automation">Nova regra</button></div>${list(state.automations,'automation','Nenhuma automação criada.')}</section>
+    <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Conhecimento</h2><div class="panel-subtitle">Documentação, requisitos e wiki</div></div><button class="btn small" data-add-resource="document">Novo documento</button></div>${list(state.documents,'document','Nenhum documento criado.')}</section>
+    <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Testes</h2><div class="panel-subtitle">Casos, planos e evidências</div></div><button class="btn small" data-add-resource="test">Novo caso</button></div>${list(state.testCases,'test','Nenhum caso de teste criado.')}</section>
+    <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Integrações</h2><div class="panel-subtitle">Conectores disponíveis para configuração</div></div></div>${state.integrations.map(item=>`<div class="admin-list-item"><div><strong>${esc(item.name)}</strong><div class="muted small-text">${esc(item.status)}</div></div><button class="btn small ${item.enabled?'danger':''}" data-toggle-integration="${item.id}">${item.enabled?'Desativar':'Configurar'}</button></div>`).join('')}</section>
+    <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Papéis e permissões</h2><div class="panel-subtitle">Controle interno por função</div></div></div>${state.roles.map(role=>`<div class="admin-list-item"><div><strong>${esc(role.name)}</strong><div class="muted small-text">${role.permissions.map(esc).join(' · ')}</div></div></div>`).join('')}</section>
+    <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Filtros salvos</h2><div class="panel-subtitle">Consultas reutilizáveis da equipe</div></div></div>${list(state.savedFilters,'filter','Salve um filtro no quadro ou backlog.')}</section>
+  </div></div>`;
+}
+function renderSettings() { return `<div class="page">${pageHeader('Configurações','Preferências do workspace e do fluxo de trabalho')}<div class="grid-2"><section class="panel"><h2 class="panel-title">Workspace</h2><div class="form-group" style="margin-top:20px"><label>Nome</label><input class="field" id="workspace-name" value="${esc(state.meta.workspace)}"></div><button class="btn primary" style="margin-top:14px" data-save-workspace>Salvar alterações</button></section><section class="panel"><h2 class="panel-title">Colunas do fluxo</h2><div style="margin-top:14px">${state.statuses.map(s=>`<div style="display:flex;align-items:center;gap:9px;padding:10px 0;border-top:1px solid var(--line)"><span class="status-dot" style="background:${s.color}"></span><strong>${s.name}</strong><span class="muted" style="margin-left:auto">Limite WIP: ${s.limit||'—'}</span></div>`).join('')}</div></section><section class="panel"><h2 class="panel-title">Dados demonstrativos</h2><p class="muted">Restaura projetos e tarefas iniciais. Suas alterações serão substituídas.</p><button class="btn danger" data-reset>Restaurar dados</button></section><section class="panel"><h2 class="panel-title">Sobre</h2><p class="muted">Orbit Projects v1.0 · JavaScript + Node.js<br>Dados persistidos localmente no servidor.</p></section></div></div>`; }
+function renderSearch() { const q=filters.query.toLowerCase(),issues=state.issues.filter(i=>`${i.key} ${i.title} ${i.description}`.toLowerCase().includes(q)); return `<div class="page">${pageHeader(`Resultados para “${esc(filters.query)}”`,`${issues.length} tarefas encontradas`)}<section class="panel">${issues.map(issueRow).join('')||'<div class="empty">Nenhum resultado encontrado.</div>'}</section></div>`; }
+
+function renderDrawer() {
+  const i=state.issues.find(x=>x.id===selectedIssue);
+  if(!i){selectedIssue=null;return ''}
+  const comments=i.comments||[], logs=i.worklogs||[];
+  return `<div class="drawer-backdrop" data-close-drawer></div><aside class="drawer">
+    <header class="drawer-head"><span class="type-icon" style="background:${i.type==='bug'?'var(--red)':i.type==='story'?'var(--green)':'var(--blue)'}">${typeLabel[i.type][0]}</span><strong>${i.key}</strong><div class="management-actions drawer-actions"><button class="btn small" data-subtask-issue="${i.id}">Subtarefa</button><button class="btn small" data-clone-issue="${i.id}">Clonar</button><button class="btn small" data-edit-issue="${i.id}">Editar</button><button class="btn small danger" data-delete-issue="${i.id}">Excluir</button></div><button class="icon-btn" data-close-drawer>${icons.close}</button></header>
+    <div class="drawer-body"><div class="label">${esc(project(i.projectId).name)}</div><h2 class="drawer-title">${esc(i.title)}</h2><div class="muted">Criado em ${fmtDate(i.created)} por ${esc(member(i.reporter).name)}</div><div class="drawer-grid"><div>
+      <section class="detail-section" style="border:0"><h4>Descrição</h4><div class="description">${esc(i.description)||'Sem descrição.'}</div>${i.parentId?`<div class="small-text muted" style="margin-top:12px">Subtarefa de ${esc(state.issues.find(x=>x.id===i.parentId)?.key||'item removido')}</div>`:''}${state.issues.some(x=>x.parentId===i.id)?`<div style="margin-top:14px"><strong class="small-text">Subtarefas</strong>${state.issues.filter(x=>x.parentId===i.id).map(x=>`<button class="subtask-link" data-issue="${x.id}">${x.key} · ${esc(x.title)}</button>`).join('')}</div>`:''}</section>
+      <section class="detail-section"><h4>Comentários · ${comments.length}</h4>${comments.map(c=>`<div class="comment">${avatar(c.author,true)}<div class="comment-bubble"><strong>${esc(member(c.author).name)}</strong><span class="muted small-text"> · ${fmtTime(c.date)}</span><button class="inline-delete" data-delete-comment="${c.id}">Excluir</button><p>${esc(c.text)}</p></div></div>`).join('')}<form class="comment-form" data-comment-form><input class="field" name="comment" placeholder="Escreva um comentário…" required><button class="btn primary">Enviar</button></form></section>
+      <section class="detail-section"><h4>Registro de tempo</h4>${logs.map(w=>`<div class="activity">${avatar(w.user,true)}<div class="activity-content"><strong>${(w.minutes/60).toFixed(1)}h</strong> · ${esc(w.note)}<div class="muted small-text">${fmtDate(w.date)}</div></div><button class="inline-delete" data-delete-worklog="${w.id}">Excluir</button></div>`).join('')||'<p class="muted">Nenhum tempo registrado.</p>'}<button class="btn small" data-worklog>＋ Registrar tempo</button></section>
+    </div><aside class="detail-list"><div class="detail-pair"><label>Status</label><select class="select" data-issue-field="status">${state.statuses.map(s=>`<option value="${s.id}" ${s.id===i.status?'selected':''}>${s.name}</option>`).join('')}</select></div><div class="detail-pair"><label>Responsável</label><select class="select" data-issue-field="assignee">${state.members.map(m=>`<option value="${m.id}" ${m.id===i.assignee?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div><div class="detail-pair"><label>Prioridade</label><select class="select" data-issue-field="priority">${Object.entries(priorityLabel).map(([v,l])=>`<option value="${v}" ${v===i.priority?'selected':''}>${l}</option>`).join('')}</select></div><div class="detail-pair"><label>Sprint</label><select class="select" data-issue-field="sprintId"><option value="">Backlog</option>${state.sprints.filter(s=>s.projectId===i.projectId).map(s=>`<option value="${s.id}" ${s.id===i.sprintId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div><div class="detail-pair"><label>Pontos</label><input class="field" type="number" min="0" data-issue-field="points" value="${i.points||0}"></div><div class="detail-pair"><label>Prazo</label><input class="field" type="date" data-issue-field="due" value="${i.due||''}"></div><div class="detail-pair"><label>Épico</label><input class="field" data-issue-field="epic" value="${esc(i.epic||'')}"></div></aside></div></div></aside>`;
+}
+
+function renderModal() {
+  if(modal.type==='issue') return issueModal();
+  if(modal.type==='project') return projectModal();
+  if(modal.type==='sprint') return sprintModal();
+  if(modal.type==='member') return memberModal();
+  if(modal.type==='worklog') return worklogModal();
+  if(modal.type==='editIssue') return editIssueModal();
+  if(modal.type==='editProject') return editProjectModal();
+  if(modal.type==='editMember') return editMemberModal();
+  if(modal.type==='editSprint') return editSprintModal();
+  return '';
+}
+function modalWrap(title,body,submit='Criar') { return `<div class="modal-backdrop" data-close-modal><form class="modal" data-modal-form data-modal-type="${modal.type}" onclick="event.stopPropagation()"><h2>${title}</h2>${body}<div class="modal-actions"><button type="button" class="btn" data-close-modal>Cancelar</button><button class="btn primary">${submit}</button></div></form></div>`; }
+function issueModal(){const pref=modal.prefill||{};return modalWrap('Criar nova tarefa',`<div class="form-grid"><div class="form-group full"><label>Resumo</label><input name="title" autofocus required placeholder="O que precisa ser feito?"></div><div class="form-group"><label>Projeto</label><select name="projectId">${state.projects.filter(p=>!p.archived).map(p=>`<option value="${p.id}" ${p.id===selectedProject?'selected':''}>${p.key} · ${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Tipo</label><select name="type">${Object.entries(typeLabel).map(([v,l])=>`<option value="${v}" ${v===(pref.type||'task')?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group full"><label>Descrição</label><textarea name="description" placeholder="Contexto, critérios de aceite e detalhes…"></textarea></div><div class="form-group"><label>Status</label><select name="status">${state.statuses.map(s=>`<option value="${s.id}" ${s.id===(pref.status||'todo')?'selected':''}>${s.name}</option>`).join('')}</select></div><div class="form-group"><label>Responsável</label><select name="assignee">${state.members.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div><div class="form-group"><label>Prioridade</label><select name="priority">${Object.entries(priorityLabel).map(([v,l])=>`<option value="${v}" ${v==='medium'?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group"><label>Pontos</label><input type="number" name="points" value="3" min="0"></div><div class="form-group"><label>Prazo</label><input type="date" name="due"></div><div class="form-group"><label>Épico</label><input name="epic" placeholder="Ex.: Autenticação"></div><div class="form-group full"><label>Etiquetas (separadas por vírgula)</label><input name="labels" placeholder="mobile, segurança"></div></div>`)}
+function projectModal(){return modalWrap('Novo projeto',`<div class="form-grid"><div class="form-group"><label>Nome</label><input name="name" required autofocus></div><div class="form-group"><label>Chave</label><input name="key" maxlength="5" required placeholder="PROJ"></div><div class="form-group full"><label>Descrição</label><textarea name="description"></textarea></div><div class="form-group"><label>Modelo</label><select name="type"><option value="scrum">Scrum</option><option value="kanban">Kanban</option><option value="hybrid">Híbrido</option></select></div><div class="form-group"><label>Template</label><select name="templateId"><option value="">Sem template</option>${state.templates.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div><div class="form-group"><label>Gestão</label><select name="management"><option value="team">Gerenciado pela equipe</option><option value="company">Gerenciado pela empresa</option></select></div><div class="form-group"><label>Líder</label><select name="lead">${state.members.slice(0,-1).map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div></div>`)}
+function sprintModal(){return modalWrap('Planejar sprint',`<div class="form-grid"><div class="form-group full"><label>Nome</label><input name="name" required value="Sprint ${state.sprints.length+1}"></div><div class="form-group full"><label>Meta</label><textarea name="goal"></textarea></div><div class="form-group"><label>Início</label><input type="date" name="start" required></div><div class="form-group"><label>Fim</label><input type="date" name="end" required></div></div>`)}
+function memberModal(){return modalWrap('Adicionar pessoa',`<div class="form-grid"><div class="form-group full"><label>Nome completo</label><input name="name" required autofocus></div><div class="form-group full"><label>Função</label><input name="role" required placeholder="Desenvolvedor, Designer…"></div></div>`,'Adicionar')}
+function worklogModal(){return modalWrap('Registrar tempo',`<div class="form-grid"><div class="form-group"><label>Horas</label><input type="number" name="hours" step="0.25" min="0.25" required></div><div class="form-group"><label>Data</label><input type="date" name="date" value="${new Date().toISOString().slice(0,10)}" required></div><div class="form-group full"><label>Descrição</label><input name="note" required placeholder="O que foi realizado?"></div></div>`,'Registrar')}
+function editIssueModal(){const i=state.issues.find(x=>x.id===modal.id);return modalWrap('Editar tarefa',`<div class="form-grid"><div class="form-group full"><label>Resumo</label><input name="title" value="${esc(i.title)}" required autofocus></div><div class="form-group"><label>Projeto</label><select name="projectId">${state.projects.filter(p=>!p.archived||p.id===i.projectId).map(p=>`<option value="${p.id}" ${p.id===i.projectId?'selected':''}>${p.key} · ${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Tipo</label><select name="type">${Object.entries(typeLabel).map(([v,l])=>`<option value="${v}" ${v===i.type?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group full"><label>Descrição</label><textarea name="description">${esc(i.description)}</textarea></div><div class="form-group"><label>Status</label><select name="status">${state.statuses.map(s=>`<option value="${s.id}" ${s.id===i.status?'selected':''}>${s.name}</option>`).join('')}</select></div><div class="form-group"><label>Responsável</label><select name="assignee">${state.members.map(m=>`<option value="${m.id}" ${m.id===i.assignee?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div><div class="form-group"><label>Prioridade</label><select name="priority">${Object.entries(priorityLabel).map(([v,l])=>`<option value="${v}" ${v===i.priority?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group"><label>Pontos</label><input type="number" name="points" value="${i.points||0}" min="0"></div><div class="form-group"><label>Prazo</label><input type="date" name="due" value="${i.due||''}"></div><div class="form-group"><label>Épico</label><input name="epic" value="${esc(i.epic||'')}"></div><div class="form-group full"><label>Etiquetas</label><input name="labels" value="${esc((i.labels||[]).join(', '))}"></div></div>`,'Salvar')}
+function editProjectModal(){const p=state.projects.find(x=>x.id===modal.id);return modalWrap('Editar projeto',`<div class="form-grid"><div class="form-group"><label>Nome</label><input name="name" value="${esc(p.name)}" required autofocus></div><div class="form-group"><label>Chave</label><input name="key" value="${esc(p.key)}" maxlength="5" required></div><div class="form-group full"><label>Descrição</label><textarea name="description">${esc(p.description)}</textarea></div><div class="form-group"><label>Modelo</label><select name="type"><option value="scrum" ${p.type==='scrum'?'selected':''}>Scrum</option><option value="kanban" ${p.type==='kanban'?'selected':''}>Kanban</option><option value="hybrid" ${p.type==='hybrid'?'selected':''}>Híbrido</option></select></div><div class="form-group"><label>Gestão</label><select name="management"><option value="team" ${p.management==='team'?'selected':''}>Gerenciado pela equipe</option><option value="company" ${p.management==='company'?'selected':''}>Gerenciado pela empresa</option></select></div><div class="form-group"><label>Líder</label><select name="lead">${state.members.map(m=>`<option value="${m.id}" ${m.id===p.lead?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div></div>`,'Salvar')}
+function editMemberModal(){const m=state.members.find(x=>x.id===modal.id);return modalWrap('Editar pessoa',`<div class="form-grid"><div class="form-group full"><label>Nome completo</label><input name="name" value="${esc(m.name)}" required autofocus></div><div class="form-group full"><label>Função</label><input name="role" value="${esc(m.role)}" required></div></div>`,'Salvar')}
+function editSprintModal(){const s=state.sprints.find(x=>x.id===modal.id);return modalWrap('Editar sprint',`<div class="form-grid"><div class="form-group full"><label>Nome</label><input name="name" value="${esc(s.name)}" required autofocus></div><div class="form-group full"><label>Meta</label><textarea name="goal">${esc(s.goal)}</textarea></div><div class="form-group"><label>Início</label><input type="date" name="start" value="${s.start||''}" required></div><div class="form-group"><label>Fim</label><input type="date" name="end" value="${s.end||''}" required></div><div class="form-group full"><label>Status</label><select name="status"><option value="planned" ${s.status==='planned'?'selected':''}>Planejada</option><option value="active" ${s.status==='active'?'selected':''}>Ativa</option><option value="completed" ${s.status==='completed'?'selected':''}>Concluída</option></select></div></div>`,'Salvar')}
+
+app.addEventListener('click',event=>{
+  const routeEl=event.target.closest('[data-route]'); if(routeEl){route=routeEl.dataset.route;location.hash=route;selectedIssue=null;render();return}
+  const issueEl=event.target.closest('[data-issue]'); if(issueEl&&!event.target.closest('[data-open]')){selectedIssue=issueEl.dataset.issue;render();return}
+  if(event.target.closest('[data-close-drawer]')){selectedIssue=null;render();return}
+  if(event.target.closest('[data-close-modal]')){modal=null;render();return}
+  const open=event.target.closest('[data-open]'); if(open){modal={type:open.dataset.open,prefill:{status:open.dataset.statusPrefill,type:open.dataset.typePrefill}};render();return}
+  const editProject=event.target.closest('[data-edit-project]');if(editProject){modal={type:'editProject',id:editProject.dataset.editProject};render();return}
+  const cloneProject=event.target.closest('[data-clone-project]');if(cloneProject){cloneProjectById(cloneProject.dataset.cloneProject);return}
+  const archiveProject=event.target.closest('[data-archive-project]');if(archiveProject){toggleProjectArchive(archiveProject.dataset.archiveProject);return}
+  const deleteProject=event.target.closest('[data-delete-project]');if(deleteProject){deleteProjectById(deleteProject.dataset.deleteProject);return}
+  const editMember=event.target.closest('[data-edit-member]');if(editMember){modal={type:'editMember',id:editMember.dataset.editMember};render();return}
+  const deleteMember=event.target.closest('[data-delete-member]');if(deleteMember){deleteMemberById(deleteMember.dataset.deleteMember);return}
+  const editIssue=event.target.closest('[data-edit-issue]');if(editIssue){modal={type:'editIssue',id:editIssue.dataset.editIssue};render();return}
+  const subtaskIssue=event.target.closest('[data-subtask-issue]');if(subtaskIssue){modal={type:'issue',prefill:{parentId:subtaskIssue.dataset.subtaskIssue,status:'todo',type:'task'}};render();return}
+  const cloneIssue=event.target.closest('[data-clone-issue]');if(cloneIssue){cloneIssueById(cloneIssue.dataset.cloneIssue);return}
+  const deleteIssue=event.target.closest('[data-delete-issue]');if(deleteIssue){deleteIssueById(deleteIssue.dataset.deleteIssue);return}
+  const editSprint=event.target.closest('[data-edit-sprint]');if(editSprint){modal={type:'editSprint',id:editSprint.dataset.editSprint};render();return}
+  const deleteSprint=event.target.closest('[data-delete-sprint]');if(deleteSprint){deleteSprintById(deleteSprint.dataset.deleteSprint);return}
+  const deleteComment=event.target.closest('[data-delete-comment]');if(deleteComment){deleteCommentById(deleteComment.dataset.deleteComment);return}
+  const deleteWorklog=event.target.closest('[data-delete-worklog]');if(deleteWorklog){deleteWorklogById(deleteWorklog.dataset.deleteWorklog);return}
+  if(event.target.closest('[data-save-filter]')){saveCurrentFilter();return}
+  const applyFilter=event.target.closest('[data-apply-filter]');if(applyFilter){applySavedFilter(applyFilter.dataset.applyFilter);return}
+  const addResource=event.target.closest('[data-add-resource]');if(addResource){addInternalResource(addResource.dataset.addResource);return}
+  const deleteResource=event.target.closest('[data-delete-resource]');if(deleteResource){deleteInternalResource(deleteResource.dataset.deleteResource);return}
+  const toggleIntegration=event.target.closest('[data-toggle-integration]');if(toggleIntegration){configureIntegration(toggleIntegration.dataset.toggleIntegration);return}
+  const choose=event.target.closest('[data-select-project]');if(choose){selectedProject=choose.dataset.selectProject;localStorage.setItem('orbit.project',selectedProject);route='board';location.hash='board';render();return}
+  if(event.target.closest('[data-worklog]')){modal={type:'worklog'};render();return}
+  if(event.target.closest('[data-save-workspace]')){state.meta.workspace=document.querySelector('#workspace-name').value.trim()||state.meta.workspace;persist('Workspace atualizado');render();return}
+  if(event.target.closest('[data-reset]')&&confirm('Restaurar todos os dados demonstrativos?')){fetch('/api/reset',{method:'POST'}).then(r=>r.json()).then(data=>{state=data;selectedProject='p1';toast('Dados restaurados');render()});}
+});
+
+app.addEventListener('change',event=>{
+  if(event.target.matches('[data-project-picker]')){selectedProject=event.target.value;localStorage.setItem('orbit.project',selectedProject);render();return}
+  if(event.target.matches('[data-filter]')){filters[event.target.dataset.filter]=event.target.value;render();return}
+  if(event.target.matches('[data-issue-field]')){const i=state.issues.find(x=>x.id===selectedIssue),field=event.target.dataset.issueField;i[field]=field==='points'?Number(event.target.value):event.target.value||null;i.updated=new Date().toISOString();addActivity(`${i.key} foi atualizado`);persist('Tarefa atualizada');render();}
+});
+app.addEventListener('input',event=>{if(event.target.matches('[data-filter="query"]')){filters.query=event.target.value;render();}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){selectedIssue=null;modal=null;render()}if((e.ctrlKey||e.metaKey)&&e.key==='k'){e.preventDefault();document.querySelector('#global-search')?.focus()}});
+document.addEventListener('input',e=>{if(e.target.id==='global-search')filters.query=e.target.value});
+document.addEventListener('keydown',e=>{if(e.target.id==='global-search'&&e.key==='Enter'){route='search';location.hash='search';render()}});
+window.addEventListener('hashchange',()=>{route=location.hash.slice(1)||'dashboard';selectedIssue=null;modal=null;render()});
+
+app.addEventListener('submit',event=>{
+  event.preventDefault();
+  if(event.target.matches('[data-comment-form]')){const input=event.target.comment,text=input.value.trim();if(!text)return;const i=state.issues.find(x=>x.id===selectedIssue);i.comments.push({id:id('c'),author:state.currentUser,text,date:new Date().toISOString()});addActivity(`comentou em ${i.key}`);persist('Comentário adicionado');render();return}
+  if(!event.target.matches('[data-modal-form]'))return;
+  const data=Object.fromEntries(new FormData(event.target)); const type=event.target.dataset.modalType;
+  if(type==='issue') createIssue(data);
+  if(type==='project') createProject(data);
+  if(type==='sprint') createSprint(data);
+  if(type==='member') createMember(data);
+  if(type==='worklog') createWorklog(data);
+  if(type==='editIssue') updateIssue(modal.id,data);
+  if(type==='editProject') updateProject(modal.id,data);
+  if(type==='editMember') updateMember(modal.id,data);
+  if(type==='editSprint') updateSprint(modal.id,data);
+  modal=null;persist('Alteração salva');render();
+});
+
+function createIssue(data){const p=project(data.projectId),numbers=state.issues.filter(i=>i.projectId===p.id).map(i=>Number(i.key.split('-').at(-1))||0),key=`${p.key}-${Math.max(0,...numbers)+1}`;const issue={id:id('i'),key,projectId:p.id,title:data.title.trim(),description:data.description.trim(),type:data.type,priority:data.priority,status:data.status,assignee:data.assignee,reporter:state.currentUser,sprintId:null,parentId:modal?.prefill?.parentId||null,epic:data.epic.trim(),points:Number(data.points)||0,originalEstimate:0,due:data.due||null,labels:data.labels.split(',').map(x=>x.trim()).filter(Boolean),links:[],customFields:{},watchers:[],created:new Date().toISOString(),updated:new Date().toISOString(),order:999,comments:[],worklogs:[]};const active=state.sprints.find(s=>s.projectId===p.id&&s.status==='active');if(active&&route!=='backlog'&&!issue.parentId)issue.sprintId=active.id;state.issues.push(issue);addActivity(`criou ${key}`);selectedIssue=issue.id;}
+function createProject(data){const template=state.templates.find(t=>t.id===data.templateId);const p={id:id('p'),key:data.key.trim().toUpperCase(),name:data.name.trim(),description:data.description.trim()||template?.description||'',type:template?.type||data.type||'kanban',management:data.management||'team',templateId:data.templateId||null,color:['#6757d9','#1f8f75','#d06b38','#3478c9'][state.projects.length%4],lead:data.lead,archived:false};state.projects.push(p);selectedProject=p.id;localStorage.setItem('orbit.project',p.id);addActivity(`criou o projeto ${p.name}`);}
+function createSprint(data){state.sprints.push({id:id('s'),projectId:selectedProject,name:data.name.trim(),goal:data.goal.trim(),start:data.start,end:data.end,status:'planned'});addActivity(`planejou ${data.name}`);}
+function createMember(data){const names=data.name.trim().split(/\s+/),initials=(names[0][0]+(names.at(-1)[0]||'')).toUpperCase();state.members.splice(state.members.length-1,0,{id:id('u'),name:data.name.trim(),initials,role:data.role.trim(),color:['#6757d9','#1f8f75','#d06b38','#3478c9'][state.members.length%4]});addActivity(`adicionou ${data.name} à equipe`);}
+function createWorklog(data){const i=state.issues.find(x=>x.id===selectedIssue);i.worklogs.push({id:id('w'),user:state.currentUser,minutes:Math.round(Number(data.hours)*60),date:data.date,note:data.note.trim()});addActivity(`registrou ${data.hours}h em ${i.key}`);}
+function addActivity(text){state.activity.unshift({id:id('a'),user:state.currentUser,text,date:new Date().toISOString()});state.activity=state.activity.slice(0,30);}
+
+function updateIssue(issueId,data){const i=state.issues.find(x=>x.id===issueId),oldProject=i.projectId;if(oldProject!==data.projectId){const p=project(data.projectId),numbers=state.issues.filter(x=>x.projectId===p.id).map(x=>Number(x.key.split('-').at(-1))||0);i.key=`${p.key}-${Math.max(0,...numbers)+1}`;i.sprintId=null}Object.assign(i,{title:data.title.trim(),description:data.description.trim(),projectId:data.projectId,type:data.type,status:data.status,assignee:data.assignee,priority:data.priority,points:Number(data.points)||0,due:data.due||null,epic:data.epic.trim(),labels:data.labels.split(',').map(x=>x.trim()).filter(Boolean),updated:new Date().toISOString()});addActivity(`atualizou ${i.key}`);}
+function updateProject(projectId,data){const p=state.projects.find(x=>x.id===projectId),oldKey=p.key;Object.assign(p,{name:data.name.trim(),key:data.key.trim().toUpperCase(),description:data.description.trim(),type:data.type,management:data.management||'team',lead:data.lead});if(oldKey!==p.key)state.issues.filter(i=>i.projectId===p.id).forEach(i=>{const number=i.key.split('-').at(-1);i.key=`${p.key}-${number}`});addActivity(`atualizou o projeto ${p.name}`);}
+function cloneProjectById(projectId){const source=state.projects.find(x=>x.id===projectId);if(!source)return;const key=prompt('Chave do novo projeto:',`${source.key}2`)?.trim().toUpperCase();if(!key)return;if(state.projects.some(p=>p.key===key)){toast('Essa chave já está em uso','error');return}const clone={...source,id:id('p'),key,name:`${source.name} (cópia)`,archived:false};state.projects.push(clone);const sprintMap=new Map();state.sprints.filter(s=>s.projectId===source.id).forEach(s=>{const copy={...s,id:id('s'),projectId:clone.id,status:s.status==='active'?'planned':s.status};sprintMap.set(s.id,copy.id);state.sprints.push(copy)});const issueMap=new Map();state.issues.filter(i=>i.projectId===source.id).forEach((i,n)=>{const copy={...i,id:id('i'),key:`${key}-${n+1}`,projectId:clone.id,sprintId:sprintMap.get(i.sprintId)||null,comments:[],worklogs:[],links:[],updated:new Date().toISOString()};issueMap.set(i.id,copy.id);state.issues.push(copy)});state.issues.filter(i=>i.projectId===clone.id).forEach(i=>{i.parentId=issueMap.get(i.parentId)||null});state.releases.filter(r=>r.projectId===source.id).forEach(r=>state.releases.push({...r,id:id('r'),projectId:clone.id,status:'planned',progress:0}));addActivity(`clonou o projeto ${source.name}`);persist('Projeto clonado');render();}
+function cloneIssueById(issueId){const source=state.issues.find(x=>x.id===issueId),p=project(source?.projectId);if(!source||!p)return;const numbers=state.issues.filter(i=>i.projectId===p.id).map(i=>Number(i.key.split('-').at(-1))||0);const copy={...source,id:id('i'),key:`${p.key}-${Math.max(0,...numbers)+1}`,title:`${source.title} (cópia)`,comments:[],worklogs:[],links:[],created:new Date().toISOString(),updated:new Date().toISOString()};state.issues.push(copy);selectedIssue=copy.id;addActivity(`clonou ${source.key} como ${copy.key}`);persist('Tarefa clonada');render();}
+function updateMember(memberId,data){const m=state.members.find(x=>x.id===memberId),names=data.name.trim().split(/\s+/);m.name=data.name.trim();m.role=data.role.trim();m.initials=(names[0][0]+(names.at(-1)[0]||'')).toUpperCase();addActivity(`atualizou ${m.name}`);}
+function updateSprint(sprintId,data){const s=state.sprints.find(x=>x.id===sprintId);Object.assign(s,{name:data.name.trim(),goal:data.goal.trim(),start:data.start,end:data.end,status:data.status});addActivity(`atualizou ${s.name}`);}
+
+function toggleProjectArchive(projectId){const p=state.projects.find(x=>x.id===projectId);if(!p)return;if(!p.archived&&state.projects.filter(x=>!x.archived).length===1){toast('Mantenha pelo menos um projeto ativo','error');return}p.archived=!p.archived;if(p.archived&&selectedProject===p.id)selectedProject=state.projects.find(x=>!x.archived)?.id||p.id;localStorage.setItem('orbit.project',selectedProject);addActivity(`${p.archived?'arquivou':'restaurou'} o projeto ${p.name}`);persist(p.archived?'Projeto arquivado':'Projeto restaurado');render();}
+function deleteProjectById(projectId){const p=state.projects.find(x=>x.id===projectId);if(!p)return;if(state.projects.length===1||(!p.archived&&state.projects.filter(x=>!x.archived).length===1)){toast('Mantenha pelo menos um projeto ativo','error');return}const count=state.issues.filter(i=>i.projectId===projectId).length;if(!confirm(`Excluir "${p.name}" e ${count} tarefa(s) vinculada(s)? Esta ação não pode ser desfeita.`))return;state.projects=state.projects.filter(x=>x.id!==projectId);state.issues=state.issues.filter(i=>i.projectId!==projectId);state.sprints=state.sprints.filter(s=>s.projectId!==projectId);state.releases=state.releases.filter(r=>r.projectId!==projectId);if(selectedProject===projectId)selectedProject=state.projects.find(x=>!x.archived)?.id||state.projects[0].id;localStorage.setItem('orbit.project',selectedProject);addActivity(`excluiu o projeto ${p.name}`);persist('Projeto excluído');render();}
+function deleteMemberById(memberId){const m=state.members.find(x=>x.id===memberId),fallback=state.members.at(-1);if(!m||m.id===fallback.id)return;if(!confirm(`Remover ${m.name} da equipe? Seus itens ficarão sem responsável.`))return;state.issues.forEach(i=>{if(i.assignee===memberId)i.assignee=fallback.id;if(i.reporter===memberId)i.reporter=fallback.id;(i.comments||[]).forEach(c=>{if(c.author===memberId)c.author=fallback.id});(i.worklogs||[]).forEach(w=>{if(w.user===memberId)w.user=fallback.id})});state.projects.forEach(p=>{if(p.lead===memberId)p.lead=fallback.id});state.activity.forEach(a=>{if(a.user===memberId)a.user=fallback.id});state.members=state.members.filter(x=>x.id!==memberId);if(state.currentUser===memberId)state.currentUser=state.members.find(x=>x.id!==fallback.id)?.id||fallback.id;addActivity(`removeu ${m.name} da equipe`);persist('Pessoa removida');render();}
+function deleteIssueById(issueId){const i=state.issues.find(x=>x.id===issueId);if(!i||!confirm(`Excluir a tarefa ${i.key} — ${i.title}? As subtarefas voltarão ao nível principal.`))return;state.issues.forEach(x=>{if(x.parentId===issueId)x.parentId=null;x.links=(x.links||[]).filter(link=>link.issueId!==issueId)});state.issues=state.issues.filter(x=>x.id!==issueId);selectedIssue=null;addActivity(`excluiu ${i.key}`);persist('Tarefa excluída');render();}
+function deleteSprintById(sprintId){const s=state.sprints.find(x=>x.id===sprintId);if(!s||!confirm(`Excluir a sprint "${s.name}"? As tarefas voltarão ao backlog.`))return;state.issues.forEach(i=>{if(i.sprintId===sprintId)i.sprintId=null});state.sprints=state.sprints.filter(x=>x.id!==sprintId);addActivity(`excluiu a sprint ${s.name}`);persist('Sprint excluída');render();}
+function deleteCommentById(commentId){const i=state.issues.find(x=>x.id===selectedIssue);if(!i||!confirm('Excluir este comentário?'))return;i.comments=(i.comments||[]).filter(c=>c.id!==commentId);persist('Comentário excluído');render();}
+function deleteWorklogById(worklogId){const i=state.issues.find(x=>x.id===selectedIssue);if(!i||!confirm('Excluir este registro de tempo?'))return;i.worklogs=(i.worklogs||[]).filter(w=>w.id!==worklogId);persist('Registro de tempo excluído');render();}
+function saveCurrentFilter(){const name=prompt('Nome do filtro:')?.trim();if(!name)return;state.savedFilters.push({id:id('f'),name,description:`${filters.query||'Todas as tarefas'} · ${filters.priority||'todas as prioridades'}`,query:filters.query,assignee:filters.assignee,priority:filters.priority,owner:state.currentUser,shared:true});persist('Filtro salvo');render();}
+function applySavedFilter(filterId){const f=state.savedFilters.find(x=>x.id===filterId);if(!f)return;filters={query:f.query||'',assignee:f.assignee||'',priority:f.priority||''};render();}
+function addInternalResource(kind){const title=prompt(kind==='automation'?'Nome da regra':kind==='document'?'Título do documento':'Nome do caso de teste')?.trim();if(!title)return;const description=prompt(kind==='automation'?'Descreva o gatilho e a ação:':kind==='document'?'Resumo ou conteúdo inicial:':'Passos e resultado esperado:')?.trim()||'';if(kind==='automation')state.automations.push({id:id('a'),name:title,trigger:description,enabled:true});if(kind==='document')state.documents.push({id:id('d'),title,description,type:'document',content:description,updated:new Date().toISOString()});if(kind==='test')state.testCases.push({id:id('t'),name:title,description,status:'Rascunho',steps:description,evidence:[]});persist('Item criado');render();}
+function deleteInternalResource(value){const [kind,resourceId]=value.split(':');const map={automation:'automations',document:'documents',test:'testCases',filter:'savedFilters'},collection=map[kind];if(!collection||!confirm('Excluir este item?'))return;state[collection]=state[collection].filter(x=>x.id!==resourceId);persist('Item excluído');render();}
+function configureIntegration(integrationId){const item=state.integrations.find(x=>x.id===integrationId);if(!item)return;if(item.enabled){item.enabled=false;item.status='Desativado';persist('Integração desativada');render();return}const endpoint=prompt(`Endereço da integração ${item.name}:`)?.trim();if(!endpoint)return;item.enabled=true;item.endpoint=endpoint;item.status='Configurado para a equipe';persist('Integração configurada');render();}
+
+function bindDragDrop(){let dragged=null;document.querySelectorAll('[draggable="true"]').forEach(el=>{el.addEventListener('dragstart',()=>{dragged=el.dataset.issue;el.classList.add('dragging')});el.addEventListener('dragend',()=>{el.classList.remove('dragging');document.querySelectorAll('.drag-over').forEach(x=>x.classList.remove('drag-over'))})});document.querySelectorAll('[data-status],[data-sprint]').forEach(zone=>{zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('drag-over')});zone.addEventListener('dragleave',()=>zone.classList.remove('drag-over'));zone.addEventListener('drop',e=>{e.preventDefault();const i=state.issues.find(x=>x.id===dragged);if(!i)return;if(zone.dataset.status){i.status=zone.dataset.status;addActivity(`moveu ${i.key} para ${status(i.status).name}`)}else{i.sprintId=zone.dataset.sprint||null;addActivity(`moveu ${i.key} no backlog`)}i.updated=new Date().toISOString();persist('Tarefa movida');render()})})}
+
+load();

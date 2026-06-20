@@ -1,0 +1,7 @@
+data/state.json
+node_modules/
+.deps/
+.agents/
+.codex/
+.env
+*.log
