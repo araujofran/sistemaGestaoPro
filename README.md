@@ -44,6 +44,16 @@ DATABASE_SSL=false
 
 Nunca envie o arquivo `.env` para o Git. Apenas `.env.example` deve permanecer versionado.
 
+### Configuração local automática com Docker
+
+Com o Docker Desktop aberto e indicando `Engine running`, execute:
+
+```powershell
+npm run db:local
+```
+
+O comando cria um PostgreSQL isolado na porta `5433`, gera credenciais aleatórias no `.env`, aplica migrations e importa os dados atuais. A senha não é impressa no terminal e o `.env` permanece fora do Git.
+
 ## Recursos implementados
 
 - Dashboard executivo com indicadores, progresso, atividade e releases
