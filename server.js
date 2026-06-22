@@ -9,6 +9,7 @@ const { createResourceApi } = require('./src/resource-api');
 const { createLifecycleApi } = require('./src/lifecycle-api');
 const { createFlowApi } = require('./src/flow-api');
 const { createPlanningApi } = require('./src/planning-api');
+const { createAnalyticsApi } = require('./src/analytics-api');
 
 const PORT = config.port;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -115,6 +116,7 @@ const handleResourceApi = createResourceApi({ storage, parseBody, json });
 const handleLifecycleApi = createLifecycleApi({ storage, parseBody, json });
 const handleFlowApi = createFlowApi({ storage, parseBody, json });
 const handlePlanningApi = createPlanningApi({ storage, parseBody, json });
+const handleAnalyticsApi = createAnalyticsApi({ storage, parseBody, json });
 
 function serveStatic(req, res, pathname) {
   const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
@@ -171,6 +173,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (/^\/api\/(milestones|dependencies|roadmap|forecast)(\/|$)/.test(url.pathname)) {
       await handlePlanningApi(req, res, url, account);
+      if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
+      return;
+    }
+    if (/^\/api\/(reports\/(burndown|burnup|sprint|epics|releases|time|workload)|dashboard\/metrics|dashboards)(\/|$)/.test(url.pathname)) {
+      await handleAnalyticsApi(req, res, url, account);
       if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
       return;
     }
