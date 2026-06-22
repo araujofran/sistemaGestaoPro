@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { runAutomationRules } = require('./automation-engine');
 
 function createResourceApi({ storage, parseBody, json }) {
   const editable = account => account.roleId !== 'viewer';
@@ -110,6 +111,7 @@ function createResourceApi({ storage, parseBody, json }) {
         const sequence = Math.max(0, ...state.issues.filter(item => item.projectId === project.id).map(item => Number(String(item.key).split('-').pop()) || 0)) + 1;
         Object.assign(issue, { id: id('issue'), key: `${project.key}-${sequence}`, reporter: account.memberId, created: new Date().toISOString(), order: state.issues.length + 1, comments: [], worklogs: [] });
         state.issues.push(issue);
+        runAutomationRules(state, { type: 'issue.created', issue }, account.memberId);
         const { saved } = await save(req, body, state, account, `criou ${issue.key}`, 'issue', issue.id);
         return json(res, 201, { issue, version: saved.meta.version });
       }
@@ -119,6 +121,7 @@ function createResourceApi({ storage, parseBody, json }) {
         const issue = issuePayload(body, state.issues[index]);
         if (!state.projects.some(item => item.id === issue.projectId)) return json(res, 400, { error: 'Projeto inválido.' });
         state.issues[index] = issue;
+        runAutomationRules(state, { type: 'issue.updated', issue }, account.memberId);
         const { saved } = await save(req, body, state, account, `atualizou ${issue.key}`, 'issue', issue.id);
         return json(res, 200, { issue, version: saved.meta.version });
       }

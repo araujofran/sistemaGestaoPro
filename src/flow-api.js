@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { runAutomationRules } = require('./automation-engine');
 
 function createFlowApi({ storage, parseBody, json }) {
   const makeId = prefix => `${prefix}_${crypto.randomUUID()}`;
@@ -46,6 +47,7 @@ function createFlowApi({ storage, parseBody, json }) {
       const index = body.beforeId ? Math.max(0, siblings.findIndex(item => item.id === body.beforeId)) : body.afterId ? siblings.findIndex(item => item.id === body.afterId) + 1 : siblings.length;
       siblings.splice(index < 0 ? siblings.length : index, 0, issue);
       siblings.forEach((item, itemIndex) => { item.order = (itemIndex + 1) * 1000; });
+      runAutomationRules(state, { type: 'issue.moved', issue }, account.memberId);
       const saved = await save(req, body, state, account, `moveu ${issue.key} para ${target.name}`);
       return json(res, 200, { issue, column: { id: target.id, count: targetCount + 1, limit: target.limit }, version: saved.meta.version });
     }
