@@ -1,6 +1,7 @@
 const app = document.querySelector('#app');
 const toastRoot = document.querySelector('#toast-root');
 let state;
+let authState;
 let route = location.hash.slice(1) || 'dashboard';
 let selectedProject = localStorage.getItem('orbit.project') || 'p1';
 let selectedIssue = null;
@@ -68,15 +69,24 @@ function migrateState() {
 
 async function load() {
   try {
+    const authResponse = await fetch('/api/auth/me');
+    authState = await authResponse.json();
+    if (!authResponse.ok) throw new Error(authState.error||'Falha ao verificar a sessão');
+    if (!authState.authenticated) { renderAuthScreen(authState.setupRequired); return; }
     const response = await fetch('/api/state');
     if (!response.ok) throw new Error('Falha ao carregar os dados');
     state = await response.json();
     migrateState();
+    if(authState.account?.roleId==='admin'){const accountsResponse=await fetch('/api/auth/accounts');if(accountsResponse.ok)authState.accounts=(await accountsResponse.json()).accounts}
     if (!project()) selectedProject = state.projects.find(p => !p.archived)?.id;
     render();
   } catch (error) {
     app.innerHTML = `<div class="boot"><span class="logo-mark">!</span><h2>Não foi possível abrir o Orbit</h2><p>${esc(error.message)}</p><button class="btn" onclick="location.reload()">Tentar novamente</button></div>`;
   }
+}
+
+function renderAuthScreen(setupRequired=false,error='') {
+  app.innerHTML=`<main class="auth-shell"><section class="auth-card"><span class="logo-mark">O</span><div><h1>${setupRequired?'Configurar administrador':'Entrar no Orbit'}</h1><p>${setupRequired?'Crie a primeira conta segura da equipe.':'Use sua conta para acessar o workspace.'}</p></div>${error?`<div class="auth-error">${esc(error)}</div>`:''}<form data-auth-form data-auth-mode="${setupRequired?'setup':'login'}">${setupRequired?'<label>Nome completo<input name="name" required autocomplete="name"></label>':''}<label>E-mail<input type="email" name="email" required autocomplete="email"></label><label>Senha<input type="password" name="password" minlength="10" required autocomplete="${setupRequired?'new-password':'current-password'}"></label>${setupRequired?'<small>A senha deve ter pelo menos 10 caracteres.</small>':''}<button class="btn primary">${setupRequired?'Criar administrador':'Entrar'}</button></form></section></main>`;
 }
 
 function persist(message) {
@@ -102,7 +112,8 @@ function avatar(userId, small=false) {
 }
 
 function profileAvatar() {
-  return '<span class="avatar" style="background:#6757d9" title="Minha conta">U</span>';
+  const name=authState?.account?.name||'Usuário',parts=name.trim().split(/\s+/),letters=(parts[0]?.[0]||'U')+(parts.length>1?(parts.at(-1)?.[0]||''):'');
+  return `<button class="avatar profile-avatar" style="background:#6757d9" title="Sair da conta" data-logout>${esc(letters.toUpperCase())}</button>`;
 }
 
 function navItem(name,label,icon,badge='') {
@@ -111,7 +122,7 @@ function navItem(name,label,icon,badge='') {
 
 function shell(content) {
   const p=project(); const open=projectIssues().filter(i=>i.status!=='done').length;
-  return `<div class="app-shell">
+  return `<div class="app-shell ${authState?.account?.roleId==='viewer'?'read-only':''}">
     <header class="topbar"><div class="brand"><span class="logo-mark">O</span><span class="brand-name">Orbit Projects</span></div>
       <button class="workspace-switcher" data-route="projects"><span>${esc(state.meta.workspace)}</span><span class="muted">/</span><i class="project-icon" style="background:${p.color};width:26px;height:26px;border-radius:8px;font-size:10px">${p.key}</i><span>${esc(p.name)}</span></button>
       <div class="global-search">${icons.search}<input id="global-search" placeholder="Buscar tarefa, projeto ou pessoa…" value="${esc(filters.query)}"></div>
@@ -120,7 +131,7 @@ function shell(content) {
     <aside class="sidebar"><nav>
       <div class="nav-label">Workspace</div>${navItem('dashboard','Visão geral','dashboard')}${navItem('board','Quadro','board',open)}${navItem('backlog','Backlog','backlog')}${navItem('roadmap','Roadmap','roadmap')}${navItem('reports','Relatórios','reports')}
       <div class="nav-label secondary-nav">Organização</div>${navItem('projects','Projetos','projects')}${navItem('team','Equipe','team')}${navItem('admin','Central','settings')}${navItem('settings','Configurações','settings')}
-    </nav><div class="sidebar-bottom"><div class="sidebar-user">${profileAvatar()}<div><strong>Usuário</strong><div class="muted small-text">Minha conta</div></div></div></div></aside>
+    </nav><div class="sidebar-bottom"><div class="sidebar-user">${profileAvatar()}<div><strong>${esc(authState?.account?.name||'Usuário')}</strong><div class="muted small-text">${authState?.account?.roleId==='admin'?'Administrador':authState?.account?.roleId==='viewer'?'Leitor':'Membro'}</div></div></div></div></aside>
     <main class="main">${content}</main>
   </div>${selectedIssue?renderDrawer():''}${modal?renderModal():''}`;
 }
@@ -191,7 +202,7 @@ function renderAdmin(){
     <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Conhecimento</h2><div class="panel-subtitle">Documentação, requisitos e wiki</div></div><button class="btn small" data-add-resource="document">Novo documento</button></div>${list(state.documents,'document','Nenhum documento criado.')}</section>
     <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Testes</h2><div class="panel-subtitle">Casos, planos e evidências</div></div><button class="btn small" data-add-resource="test">Novo caso</button></div>${list(state.testCases,'test','Nenhum caso de teste criado.')}</section>
     <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Integrações</h2><div class="panel-subtitle">Conectores disponíveis para configuração</div></div></div>${state.integrations.map(item=>`<div class="admin-list-item"><div><strong>${esc(item.name)}</strong><div class="muted small-text">${esc(item.status)}</div></div><button class="btn small ${item.enabled?'danger':''}" data-toggle-integration="${item.id}">${item.enabled?'Desativar':'Configurar'}</button></div>`).join('')}</section>
-    <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Papéis e permissões</h2><div class="panel-subtitle">Controle interno por função</div></div></div>${state.roles.map(role=>`<div class="admin-list-item"><div><strong>${esc(role.name)}</strong><div class="muted small-text">${role.permissions.map(esc).join(' · ')}</div></div></div>`).join('')}</section>
+    <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Acessos da equipe</h2><div class="panel-subtitle">Contas, papéis e permissões</div></div>${authState.account?.roleId==='admin'?'<button class="btn small" data-open="account">Novo acesso</button>':''}</div>${(authState.accounts||[]).map(account=>`<div class="admin-list-item"><div><strong>${esc(account.name)}</strong><div class="muted small-text">${esc(account.email)}</div></div><div class="management-actions"><select class="select compact" data-account-role="${account.id}" ${account.id===authState.account?.id?'disabled':''}><option value="admin" ${account.roleId==='admin'?'selected':''}>Administrador</option><option value="member" ${account.roleId==='member'?'selected':''}>Membro</option><option value="viewer" ${account.roleId==='viewer'?'selected':''}>Leitor</option></select>${account.id!==authState.account?.id?`<button class="inline-delete" data-delete-account="${account.id}">Desativar</button>`:''}</div></div>`).join('')||'<div class="empty small-text">Configure o primeiro administrador.</div>'}</section>
     <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Filtros salvos</h2><div class="panel-subtitle">Consultas reutilizáveis da equipe</div></div></div>${list(state.savedFilters,'filter','Salve um filtro no quadro ou backlog.')}</section>
   </div></div>`;
 }
@@ -221,6 +232,7 @@ function renderModal() {
   if(modal.type==='editProject') return editProjectModal();
   if(modal.type==='editMember') return editMemberModal();
   if(modal.type==='editSprint') return editSprintModal();
+  if(modal.type==='account') return accountModal();
   return '';
 }
 function modalWrap(title,body,submit='Criar') { return `<div class="modal-backdrop" data-close-modal><form class="modal" data-modal-form data-modal-type="${modal.type}" onclick="event.stopPropagation()"><h2>${title}</h2>${body}<div class="modal-actions"><button type="button" class="btn" data-close-modal>Cancelar</button><button class="btn primary">${submit}</button></div></form></div>`; }
@@ -233,8 +245,10 @@ function editIssueModal(){const i=state.issues.find(x=>x.id===modal.id);return m
 function editProjectModal(){const p=state.projects.find(x=>x.id===modal.id);return modalWrap('Editar projeto',`<div class="form-grid"><div class="form-group"><label>Nome</label><input name="name" value="${esc(p.name)}" required autofocus></div><div class="form-group"><label>Chave</label><input name="key" value="${esc(p.key)}" maxlength="5" required></div><div class="form-group full"><label>Descrição</label><textarea name="description">${esc(p.description)}</textarea></div><div class="form-group"><label>Modelo</label><select name="type"><option value="scrum" ${p.type==='scrum'?'selected':''}>Scrum</option><option value="kanban" ${p.type==='kanban'?'selected':''}>Kanban</option><option value="hybrid" ${p.type==='hybrid'?'selected':''}>Híbrido</option></select></div><div class="form-group"><label>Gestão</label><select name="management"><option value="team" ${p.management==='team'?'selected':''}>Gerenciado pela equipe</option><option value="company" ${p.management==='company'?'selected':''}>Gerenciado pela empresa</option></select></div><div class="form-group"><label>Líder</label><select name="lead">${state.members.map(m=>`<option value="${m.id}" ${m.id===p.lead?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div></div>`,'Salvar')}
 function editMemberModal(){const m=state.members.find(x=>x.id===modal.id);return modalWrap('Editar pessoa',`<div class="form-grid"><div class="form-group full"><label>Nome completo</label><input name="name" value="${esc(m.name)}" required autofocus></div><div class="form-group full"><label>Função</label><input name="role" value="${esc(m.role)}" required></div></div>`,'Salvar')}
 function editSprintModal(){const s=state.sprints.find(x=>x.id===modal.id);return modalWrap('Editar sprint',`<div class="form-grid"><div class="form-group full"><label>Nome</label><input name="name" value="${esc(s.name)}" required autofocus></div><div class="form-group full"><label>Meta</label><textarea name="goal">${esc(s.goal)}</textarea></div><div class="form-group"><label>Início</label><input type="date" name="start" value="${s.start||''}" required></div><div class="form-group"><label>Fim</label><input type="date" name="end" value="${s.end||''}" required></div><div class="form-group full"><label>Status</label><select name="status"><option value="planned" ${s.status==='planned'?'selected':''}>Planejada</option><option value="active" ${s.status==='active'?'selected':''}>Ativa</option><option value="completed" ${s.status==='completed'?'selected':''}>Concluída</option></select></div></div>`,'Salvar')}
+function accountModal(){const existing=new Set((authState.accounts||[]).map(a=>a.memberId));return modalWrap('Novo acesso',`<div class="form-grid"><div class="form-group full"><label>Pessoa</label><select name="memberId" required>${state.members.filter(m=>m.name!=='Sem responsável'&&!existing.has(m.id)).map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div><div class="form-group full"><label>E-mail</label><input type="email" name="email" required></div><div class="form-group full"><label>Senha temporária</label><input type="password" name="password" minlength="10" required autocomplete="new-password"></div><div class="form-group full"><label>Papel</label><select name="roleId"><option value="member">Membro</option><option value="viewer">Leitor</option><option value="admin">Administrador</option></select></div></div>`,'Criar acesso')}
 
-app.addEventListener('click',event=>{
+app.addEventListener('click',async event=>{
+  if(event.target.closest('[data-logout]')){await fetch('/api/auth/logout',{method:'POST'});state=null;authState=null;await load();return}
   const routeEl=event.target.closest('[data-route]'); if(routeEl){route=routeEl.dataset.route;location.hash=route;selectedIssue=null;render();return}
   const issueEl=event.target.closest('[data-issue]'); if(issueEl&&!event.target.closest('[data-open]')){selectedIssue=issueEl.dataset.issue;render();return}
   if(event.target.closest('[data-close-drawer]')){selectedIssue=null;render();return}
@@ -259,6 +273,7 @@ app.addEventListener('click',event=>{
   const addResource=event.target.closest('[data-add-resource]');if(addResource){addInternalResource(addResource.dataset.addResource);return}
   const deleteResource=event.target.closest('[data-delete-resource]');if(deleteResource){deleteInternalResource(deleteResource.dataset.deleteResource);return}
   const toggleIntegration=event.target.closest('[data-toggle-integration]');if(toggleIntegration){configureIntegration(toggleIntegration.dataset.toggleIntegration);return}
+  const deleteAccount=event.target.closest('[data-delete-account]');if(deleteAccount&&confirm('Desativar este acesso? As sessões abertas serão encerradas.')){const response=await fetch(`/api/auth/accounts/${encodeURIComponent(deleteAccount.dataset.deleteAccount)}`,{method:'DELETE'}),result=await response.json();if(!response.ok){toast(result.error,'error');return}await load();return}
   const choose=event.target.closest('[data-select-project]');if(choose){selectedProject=choose.dataset.selectProject;localStorage.setItem('orbit.project',selectedProject);route='board';location.hash='board';render();return}
   if(event.target.closest('[data-worklog]')){modal={type:'worklog'};render();return}
   if(event.target.closest('[data-save-workspace]')){state.meta.workspace=document.querySelector('#workspace-name').value.trim()||state.meta.workspace;persist('Workspace atualizado');render();return}
@@ -266,6 +281,7 @@ app.addEventListener('click',event=>{
 });
 
 app.addEventListener('change',event=>{
+  if(event.target.matches('[data-account-role]')){fetch(`/api/auth/accounts/${encodeURIComponent(event.target.dataset.accountRole)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({roleId:event.target.value})}).then(async response=>{const result=await response.json();if(!response.ok)toast(result.error,'error');await load()});return}
   if(event.target.matches('[data-project-picker]')){selectedProject=event.target.value;localStorage.setItem('orbit.project',selectedProject);render();return}
   if(event.target.matches('[data-filter]')){filters[event.target.dataset.filter]=event.target.value;render();return}
   if(event.target.matches('[data-issue-field]')){const i=state.issues.find(x=>x.id===selectedIssue),field=event.target.dataset.issueField;i[field]=field==='points'?Number(event.target.value):event.target.value||null;i.updated=new Date().toISOString();addActivity(`${i.key} foi atualizado`);persist('Tarefa atualizada');render();}
@@ -276,11 +292,13 @@ document.addEventListener('input',e=>{if(e.target.id==='global-search')filters.q
 document.addEventListener('keydown',e=>{if(e.target.id==='global-search'&&e.key==='Enter'){route='search';location.hash='search';render()}});
 window.addEventListener('hashchange',()=>{route=location.hash.slice(1)||'dashboard';selectedIssue=null;modal=null;render()});
 
-app.addEventListener('submit',event=>{
+app.addEventListener('submit',async event=>{
   event.preventDefault();
+  if(event.target.matches('[data-auth-form]')){const data=Object.fromEntries(new FormData(event.target)),setup=event.target.dataset.authMode==='setup',response=await fetch(setup?'/api/auth/setup':'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}),result=await response.json();if(!response.ok){renderAuthScreen(setup,result.error||'Não foi possível entrar.');return}await load();return}
   if(event.target.matches('[data-comment-form]')){const input=event.target.comment,text=input.value.trim();if(!text)return;const i=state.issues.find(x=>x.id===selectedIssue);i.comments.push({id:id('c'),author:state.currentUser,text,date:new Date().toISOString()});addActivity(`comentou em ${i.key}`);persist('Comentário adicionado');render();return}
   if(!event.target.matches('[data-modal-form]'))return;
   const data=Object.fromEntries(new FormData(event.target)); const type=event.target.dataset.modalType;
+  if(type==='account'){const response=await fetch('/api/auth/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}),result=await response.json();if(!response.ok){toast(result.error,'error');return}modal=null;await load();toast('Acesso criado');return}
   if(type==='issue') createIssue(data);
   if(type==='project') createProject(data);
   if(type==='sprint') createSprint(data);
@@ -320,6 +338,6 @@ function addInternalResource(kind){const title=prompt(kind==='automation'?'Nome 
 function deleteInternalResource(value){const [kind,resourceId]=value.split(':');const map={automation:'automations',document:'documents',test:'testCases',filter:'savedFilters'},collection=map[kind];if(!collection||!confirm('Excluir este item?'))return;state[collection]=state[collection].filter(x=>x.id!==resourceId);persist('Item excluído');render();}
 function configureIntegration(integrationId){const item=state.integrations.find(x=>x.id===integrationId);if(!item)return;if(item.enabled){item.enabled=false;item.status='Desativado';persist('Integração desativada');render();return}const endpoint=prompt(`Endereço da integração ${item.name}:`)?.trim();if(!endpoint)return;item.enabled=true;item.endpoint=endpoint;item.status='Configurado para a equipe';persist('Integração configurada');render();}
 
-function bindDragDrop(){let dragged=null;document.querySelectorAll('[draggable="true"]').forEach(el=>{el.addEventListener('dragstart',()=>{dragged=el.dataset.issue;el.classList.add('dragging')});el.addEventListener('dragend',()=>{el.classList.remove('dragging');document.querySelectorAll('.drag-over').forEach(x=>x.classList.remove('drag-over'))})});document.querySelectorAll('[data-status],[data-sprint]').forEach(zone=>{zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('drag-over')});zone.addEventListener('dragleave',()=>zone.classList.remove('drag-over'));zone.addEventListener('drop',e=>{e.preventDefault();const i=state.issues.find(x=>x.id===dragged);if(!i)return;if(zone.dataset.status){i.status=zone.dataset.status;addActivity(`moveu ${i.key} para ${status(i.status).name}`)}else{i.sprintId=zone.dataset.sprint||null;addActivity(`moveu ${i.key} no backlog`)}i.updated=new Date().toISOString();persist('Tarefa movida');render()})})}
+function bindDragDrop(){let dragged=null;if(authState?.account?.roleId==='viewer'){document.querySelectorAll('[draggable="true"]').forEach(el=>el.draggable=false);return}document.querySelectorAll('[draggable="true"]').forEach(el=>{el.addEventListener('dragstart',()=>{dragged=el.dataset.issue;el.classList.add('dragging')});el.addEventListener('dragend',()=>{el.classList.remove('dragging');document.querySelectorAll('.drag-over').forEach(x=>x.classList.remove('drag-over'))})});document.querySelectorAll('[data-status],[data-sprint]').forEach(zone=>{zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('drag-over')});zone.addEventListener('dragleave',()=>zone.classList.remove('drag-over'));zone.addEventListener('drop',e=>{e.preventDefault();const i=state.issues.find(x=>x.id===dragged);if(!i)return;if(zone.dataset.status){i.status=zone.dataset.status;addActivity(`moveu ${i.key} para ${status(i.status).name}`)}else{i.sprintId=zone.dataset.sprint||null;addActivity(`moveu ${i.key} no backlog`)}i.updated=new Date().toISOString();persist('Tarefa movida');render()})})}
 
 load();
