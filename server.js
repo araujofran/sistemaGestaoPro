@@ -11,6 +11,9 @@ const { createFlowApi } = require('./src/flow-api');
 const { createPlanningApi } = require('./src/planning-api');
 const { createAnalyticsApi } = require('./src/analytics-api');
 const { createSearchAutomationApi } = require('./src/search-automation-api');
+const { createCollaborationAdminApi } = require('./src/collaboration-admin-api');
+const { createEcosystemApi } = require('./src/ecosystem-api');
+const { createAiApi } = require('./src/ai-api');
 
 const PORT = config.port;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -119,6 +122,9 @@ const handleFlowApi = createFlowApi({ storage, parseBody, json });
 const handlePlanningApi = createPlanningApi({ storage, parseBody, json });
 const handleAnalyticsApi = createAnalyticsApi({ storage, parseBody, json });
 const handleSearchAutomationApi = createSearchAutomationApi({ storage, parseBody, json });
+const handleCollaborationAdminApi = createCollaborationAdminApi({ storage, parseBody, json });
+const handleEcosystemApi = createEcosystemApi({ storage, parseBody, json });
+const handleAiApi = createAiApi({ storage, parseBody, json });
 
 function serveStatic(req, res, pathname) {
   const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
@@ -185,6 +191,21 @@ const server = http.createServer(async (req, res) => {
     }
     if (/^\/api\/(search|filters|automations)(\/|$)/.test(url.pathname)) {
       await handleSearchAutomationApi(req, res, url, account);
+      if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
+      return;
+    }
+    if (/^\/api\/(workflows|approvals|notifications|teams|groups|security|audit)(\/|$)/.test(url.pathname) || /^\/api\/issues\/[^/]+\/(comments|watchers|worklogs)(\/|$)/.test(url.pathname)) {
+      await handleCollaborationAdminApi(req, res, url, account);
+      if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
+      return;
+    }
+    if (/^\/api\/(knowledge|devops|devops-connections|api-keys|catalog|test-cases|test-plans|test-executions|integration-connections|webhooks|marketplace|programs|portfolios|capacity-plans|sandboxes|enterprise)(\/|$)/.test(url.pathname)) {
+      await handleEcosystemApi(req, res, url, account);
+      if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
+      return;
+    }
+    if (/^\/api\/ai\//.test(url.pathname)) {
+      await handleAiApi(req, res, url, account);
       if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
       return;
     }
