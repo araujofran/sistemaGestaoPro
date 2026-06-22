@@ -6,8 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node scripts/test-resource-api.js",
-    "check": "node --check server.js && node --check public/app.js && node --check src/config.js && node --check src/auth.js && node --check src/resource-api.js && node --check src/storage/index.js && node --check src/storage/json-storage.js && node --check src/storage/postgres-storage.js && node --check scripts/migrate.js && node --check scripts/import-json.js && node --check scripts/setup-local-postgres.js && node --check scripts/test-resource-api.js",
+    "test": "node scripts/test-resource-api.js && node scripts/test-lifecycle-api.js",
+    "check": "node --check server.js && node --check public/app.js && node --check src/config.js && node --check src/auth.js && node --check src/resource-api.js && node --check src/lifecycle-api.js && node --check src/storage/index.js && node --check src/storage/json-storage.js && node --check src/storage/postgres-storage.js && node --check scripts/migrate.js && node --check scripts/import-json.js && node --check scripts/setup-local-postgres.js && node --check scripts/test-resource-api.js && node --check scripts/test-lifecycle-api.js",
     "db:migrate": "node scripts/migrate.js",
     "db:import": "node scripts/import-json.js",
     "db:setup": "npm run db:migrate && npm run db:import",
