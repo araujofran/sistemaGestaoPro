@@ -6,6 +6,7 @@ const config = require('./src/config');
 const { createStorage } = require('./src/storage');
 const { createAuth } = require('./src/auth');
 const { createResourceApi } = require('./src/resource-api');
+const { createLifecycleApi } = require('./src/lifecycle-api');
 
 const PORT = config.port;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -109,6 +110,7 @@ function parseBody(req) {
 }
 
 const handleResourceApi = createResourceApi({ storage, parseBody, json });
+const handleLifecycleApi = createLifecycleApi({ storage, parseBody, json });
 
 function serveStatic(req, res, pathname) {
   const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
@@ -150,6 +152,12 @@ const server = http.createServer(async (req, res) => {
     if(accountRoute&&req.method==='DELETE'){if(account.roleId!=='admin')return json(res,403,{error:'Acesso restrito a administradores.'});return json(res,200,await auth.deactivate(decodeURIComponent(accountRoute[1]),account.id))}
     if (/^\/api\/(projects|issues)(\/|$)/.test(url.pathname)) {
       await handleResourceApi(req, res, url, account);
+      if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
+      return;
+    }
+    if (/^\/api\/(sprints|releases|reports\/velocity)(\/|$)/.test(url.pathname)) {
+      await handleLifecycleApi(req, res, url, account);
+      if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
       return;
     }
     if (url.pathname === '/api/state' && req.method === 'GET') {const state=await storage.getState();return json(res,200,{...state,currentUser:account.memberId})}
