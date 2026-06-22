@@ -15,4 +15,8 @@ module.exports = {
   databaseUrl: process.env.DATABASE_URL || '',
   databaseSsl: process.env.DATABASE_SSL === 'true',
   nodeEnv: process.env.NODE_ENV || 'development',
+  aiProvider: (process.env.AI_PROVIDER || 'local').toLowerCase(),
+  aiApiKey: process.env.GEMINI_API_KEY || '',
+  aiModel: process.env.AI_MODEL || 'gemini-2.5-flash',
+  aiBaseUrl: process.env.AI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
 };

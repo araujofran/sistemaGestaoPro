@@ -8,6 +8,7 @@ let selectedIssue = null;
 let modal = null;
 let filters = { query: '', assignee: '', priority: '' };
 let saveTimer;
+let advancedData = { workflows: [], approvals: [], automations: [], runs: [], knowledge: [], connections: [], catalog: {}, ai: { mode: 'local', configured: false, model: '' } };
 
 const icons = {
   dashboard:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="4" rx="2"/><rect x="14" y="11" width="7" height="10" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/></svg>',
@@ -77,12 +78,28 @@ async function load() {
     if (!response.ok) throw new Error('Falha ao carregar os dados');
     state = await response.json();
     migrateState();
+    await loadAdvancedData();
     if(authState.account?.roleId==='admin'){const accountsResponse=await fetch('/api/auth/accounts');if(accountsResponse.ok)authState.accounts=(await accountsResponse.json()).accounts}
     if (!project()) selectedProject = state.projects.find(p => !p.archived)?.id;
     render();
   } catch (error) {
     app.innerHTML = `<div class="boot"><span class="logo-mark">!</span><h2>Não foi possível abrir o Orbit</h2><p>${esc(error.message)}</p><button class="btn" onclick="location.reload()">Tentar novamente</button></div>`;
   }
+}
+
+async function apiRequest(url, options={}) {
+  const response=await fetch(url,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})}}),data=await response.json();
+  if(!response.ok)throw new Error(data.error||'Não foi possível concluir a operação.');
+  return data;
+}
+
+async function loadAdvancedData() {
+  const safe=async(url,fallback)=>{try{return await apiRequest(url)}catch{return fallback}};
+  const [workflows,automations,knowledge,connections,catalog,ai]=await Promise.all([
+    safe('/api/workflows',{workflows:[],approvals:[]}),safe('/api/automations',{rules:[],recentRuns:[]}),safe('/api/knowledge',{pages:[]}),
+    safe('/api/integration-connections',{items:[]}),safe('/api/catalog',{}),safe('/api/ai/status',{mode:'local',configured:false,model:''})
+  ]);
+  advancedData={workflows:workflows.workflows||[],approvals:workflows.approvals||[],automations:automations.rules||[],runs:automations.recentRuns||[],knowledge:knowledge.pages||[],connections:connections.items||[],catalog,ai};
 }
 
 function renderAuthScreen(setupRequired=false,error='') {
@@ -131,6 +148,7 @@ function shell(content) {
     <aside class="sidebar"><nav>
       <div class="nav-label">Workspace</div>${navItem('dashboard','Visão geral','dashboard')}${navItem('board','Quadro','board',open)}${navItem('backlog','Backlog','backlog')}${navItem('roadmap','Roadmap','roadmap')}${navItem('reports','Relatórios','reports')}
       <div class="nav-label secondary-nav">Organização</div>${navItem('projects','Projetos','projects')}${navItem('team','Equipe','team')}${navItem('admin','Central','settings')}${navItem('settings','Configurações','settings')}
+      <div class="nav-label secondary-nav">Avançado</div>${navItem('workflows','Workflows','roadmap')}${navItem('automations','Automações','settings')}${navItem('knowledge','Conhecimento','projects')}${navItem('integrations','Integrações','settings')}
     </nav><div class="sidebar-bottom"><div class="sidebar-user">${profileAvatar()}<div><strong>${esc(authState?.account?.name||'Usuário')}</strong><div class="muted small-text">${authState?.account?.roleId==='admin'?'Administrador':authState?.account?.roleId==='viewer'?'Leitor':'Membro'}</div></div></div></div></aside>
     <main class="main">${content}</main>
   </div>${selectedIssue?renderDrawer():''}${modal?renderModal():''}`;
@@ -139,7 +157,7 @@ function shell(content) {
 function pageHeader(title,subtitle,actions='') { return `<header class="page-header"><div><h1 class="page-title">${title}</h1><p class="page-subtitle">${subtitle}</p></div><div class="page-actions">${actions}</div></header>`; }
 
 function render() {
-  const views={dashboard:renderDashboard,board:renderBoard,backlog:renderBacklog,roadmap:renderRoadmap,reports:renderReports,projects:renderProjects,team:renderTeam,admin:renderAdmin,settings:renderSettings,search:renderSearch};
+  const views={dashboard:renderDashboard,board:renderBoard,backlog:renderBacklog,roadmap:renderRoadmap,reports:renderReports,projects:renderProjects,team:renderTeam,admin:renderAdmin,settings:renderSettings,search:renderSearch,workflows:renderWorkflows,automations:renderAutomations,knowledge:renderKnowledge,integrations:renderIntegrations};
   app.innerHTML=shell((views[route]||views.dashboard)());
   bindDragDrop();
 }
@@ -205,6 +223,29 @@ function renderAdmin(){
     <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Acessos da equipe</h2><div class="panel-subtitle">Contas, papéis e permissões</div></div>${authState.account?.roleId==='admin'?'<button class="btn small" data-open="account">Novo acesso</button>':''}</div>${(authState.accounts||[]).map(account=>`<div class="admin-list-item"><div><strong>${esc(account.name)}</strong><div class="muted small-text">${esc(account.email)}</div></div><div class="management-actions"><select class="select compact" data-account-role="${account.id}" ${account.id===authState.account?.id?'disabled':''}><option value="admin" ${account.roleId==='admin'?'selected':''}>Administrador</option><option value="member" ${account.roleId==='member'?'selected':''}>Membro</option><option value="viewer" ${account.roleId==='viewer'?'selected':''}>Leitor</option></select>${account.id!==authState.account?.id?`<button class="inline-delete" data-delete-account="${account.id}">Desativar</button>`:''}</div></div>`).join('')||'<div class="empty small-text">Configure o primeiro administrador.</div>'}</section>
     <section class="panel"><div class="panel-header"><div><h2 class="panel-title">Filtros salvos</h2><div class="panel-subtitle">Consultas reutilizáveis da equipe</div></div></div>${list(state.savedFilters,'filter','Salve um filtro no quadro ou backlog.')}</section>
   </div></div>`;
+}
+function advancedCard(title,meta,body,actions=''){return `<article class="advanced-card"><div><h3>${esc(title)}</h3><div class="muted small-text">${esc(meta)}</div></div>${body?`<p>${esc(body)}</p>`:''}<div class="card-actions">${actions}</div></article>`}
+function renderWorkflows(){
+  const canManage=authState.account?.roleId==='admin';
+  const cards=advancedData.workflows.map(w=>advancedCard(w.name,`${w.states?.length||0} estados · ${w.transitions?.length||0} transições`,w.projectId?`Projeto: ${project(w.projectId)?.name||w.projectId}`:'Aplicado ao workspace',canManage?`<button class="btn small danger" data-advanced-delete="workflows:${w.id}">Excluir</button>`:'')).join('');
+  return `<div class="page">${pageHeader('Workflows','Estados, transições, validações e aprovações do trabalho')}<div class="advanced-layout">${canManage?`<form class="panel advanced-form" data-advanced-form="workflow"><h2 class="panel-title">Novo workflow</h2><label>Nome<input class="field" name="name" required placeholder="Entrega padrão"></label><label>Projeto<select class="select" name="projectId"><option value="">Todo o workspace</option>${state.projects.filter(p=>!p.archived).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label><label>Estados<input class="field" name="states" value="todo, progress, review, done" required></label><button class="btn primary">Criar workflow</button></form>`:''}<section><div class="advanced-summary"><strong>${advancedData.workflows.length}</strong><span>workflows</span><strong>${advancedData.approvals.length}</strong><span>aprovações pendentes</span></div><div class="advanced-grid">${cards||'<div class="empty">Nenhum workflow configurado.</div>'}</div></section></div></div>`;
+}
+function renderAutomations(){
+  const canManage=authState.account?.roleId==='admin';
+  const cards=advancedData.automations.map(rule=>advancedCard(rule.name,`${rule.enabled===false?'Pausada':'Ativa'} · ${rule.runCount||0} execuções`,`Gatilho: ${rule.trigger?.type||'manual'}`,canManage?`<button class="btn small" data-automation-toggle="${rule.id}">${rule.enabled===false?'Ativar':'Pausar'}</button><button class="btn small danger" data-advanced-delete="automations:${rule.id}">Excluir</button>`:'')).join('');
+  return `<div class="page">${pageHeader('Automações','Elimine trabalho repetitivo com regras auditáveis')}<div class="advanced-layout">${canManage?`<form class="panel advanced-form" data-advanced-form="automation"><h2 class="panel-title">Nova regra</h2><label>Nome<input class="field" name="name" required placeholder="Classificar bugs urgentes"></label><label>Gatilho<select class="select" name="trigger"><option value="issue.created">Tarefa criada</option><option value="issue.updated">Tarefa atualizada</option><option value="issue.moved">Tarefa movida</option><option value="manual">Manual</option></select></label><label>Condição<select class="select" name="field"><option value="priority">Prioridade</option><option value="type">Tipo</option><option value="status">Status</option></select></label><label>Valor<input class="field" name="value" value="high" required></label><label>Adicionar etiqueta<input class="field" name="label" value="automation" required></label><button class="btn primary">Criar automação</button></form>`:''}<section><div class="advanced-summary"><strong>${advancedData.automations.length}</strong><span>regras</span><strong>${advancedData.runs.length}</strong><span>execuções recentes</span></div><div class="advanced-grid">${cards||'<div class="empty">Nenhuma automação configurada.</div>'}</div></section></div></div>`;
+}
+function renderKnowledge(){
+  const canWrite=authState.account?.roleId!=='viewer';
+  const typeNames={documentation:'Documentação',requirement:'Requisito',wiki:'Wiki','knowledge-base':'Base de conhecimento'};
+  const cards=advancedData.knowledge.map(page=>advancedCard(page.title,`${typeNames[page.type]||page.type} · v${page.version||1}`,String(page.content||'').slice(0,180),canWrite?`<button class="btn small danger" data-advanced-delete="knowledge:${page.id}">Excluir</button>`:'')).join('');
+  return `<div class="page">${pageHeader('Conhecimento','Documentação, requisitos, wiki e base de conhecimento')}<div class="advanced-layout">${canWrite?`<form class="panel advanced-form" data-advanced-form="knowledge"><h2 class="panel-title">Nova página</h2><label>Título<input class="field" name="title" required></label><label>Tipo<select class="select" name="type">${Object.entries(typeNames).map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select></label><label>Projeto<select class="select" name="projectId"><option value="">Workspace</option>${state.projects.filter(p=>!p.archived).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label><label>Conteúdo<textarea name="content" required></textarea></label><button class="btn primary">Publicar página</button></form>`:''}<section><div class="advanced-summary"><strong>${advancedData.knowledge.length}</strong><span>páginas publicadas</span></div><div class="advanced-grid">${cards||'<div class="empty">Nenhuma página publicada.</div>'}</div></section></div></div>`;
+}
+function renderIntegrations(){
+  const canManage=authState.account?.roleId==='admin',providers=advancedData.catalog.integrations||['GitHub','GitLab','Slack','Microsoft Teams'];
+  const cards=advancedData.connections.map(item=>advancedCard(item.provider||item.name,item.active===false?'Desativada':'Ativa',item.endpoint||'Conexão configurada',canManage?`<button class="btn small danger" data-advanced-delete="integration-connections:${item.id}">Remover</button>`:'')).join('');
+  const ai=advancedData.ai;
+  return `<div class="page">${pageHeader('Integrações','Conectores externos e inteligência artificial')}<div class="ai-status ${ai.configured?'configured':''}"><div><strong>IA ${ai.configured?'conectada':'em modo local'}</strong><p>${ai.configured?`Gemini ${esc(ai.model)} configurado no servidor.`:'Crie uma chave gratuita no Google AI Studio e salve como GEMINI_API_KEY no arquivo .env.'}</p></div><a class="btn" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Criar chave Gemini</a></div><div class="advanced-layout">${canManage?`<form class="panel advanced-form" data-advanced-form="integration"><h2 class="panel-title">Nova conexão</h2><label>Provedor<select class="select" name="provider">${providers.map(p=>`<option>${esc(p)}</option>`).join('')}</select></label><label>Endpoint<input class="field" name="endpoint" type="url" required placeholder="https://..."></label><label>Token ou segredo<input class="field" name="secret" type="password" required autocomplete="new-password"></label><button class="btn primary">Salvar conexão</button><small class="muted">O segredo é processado somente no servidor.</small></form>`:''}<section><div class="advanced-summary"><strong>${advancedData.connections.length}</strong><span>conexões</span><strong>${providers.length}</strong><span>provedores disponíveis</span></div><div class="advanced-grid">${cards||'<div class="empty">Nenhuma integração configurada.</div>'}</div></section></div></div>`;
 }
 function renderSettings() { return `<div class="page">${pageHeader('Configurações','Preferências do workspace e do fluxo de trabalho')}<div class="grid-2"><section class="panel"><h2 class="panel-title">Workspace</h2><div class="form-group" style="margin-top:20px"><label>Nome</label><input class="field" id="workspace-name" value="${esc(state.meta.workspace)}"></div><button class="btn primary" style="margin-top:14px" data-save-workspace>Salvar alterações</button></section><section class="panel"><h2 class="panel-title">Colunas do fluxo</h2><div style="margin-top:14px">${state.statuses.map(s=>`<div style="display:flex;align-items:center;gap:9px;padding:10px 0;border-top:1px solid var(--line)"><span class="status-dot" style="background:${s.color}"></span><strong>${s.name}</strong><span class="muted" style="margin-left:auto">Limite WIP: ${s.limit||'—'}</span></div>`).join('')}</div></section><section class="panel"><h2 class="panel-title">Dados demonstrativos</h2><p class="muted">Restaura projetos e tarefas iniciais. Suas alterações serão substituídas.</p><button class="btn danger" data-reset>Restaurar dados</button></section><section class="panel"><h2 class="panel-title">Sobre</h2><p class="muted">Orbit Projects v1.0 · JavaScript + Node.js<br>Dados persistidos localmente no servidor.</p></section></div></div>`; }
 function renderSearch() { const q=filters.query.toLowerCase(),issues=state.issues.filter(i=>`${i.key} ${i.title} ${i.description}`.toLowerCase().includes(q)); return `<div class="page">${pageHeader(`Resultados para “${esc(filters.query)}”`,`${issues.length} tarefas encontradas`)}<section class="panel">${issues.map(issueRow).join('')||'<div class="empty">Nenhum resultado encontrado.</div>'}</section></div>`; }
@@ -273,6 +314,8 @@ app.addEventListener('click',async event=>{
   const addResource=event.target.closest('[data-add-resource]');if(addResource){addInternalResource(addResource.dataset.addResource);return}
   const deleteResource=event.target.closest('[data-delete-resource]');if(deleteResource){deleteInternalResource(deleteResource.dataset.deleteResource);return}
   const toggleIntegration=event.target.closest('[data-toggle-integration]');if(toggleIntegration){configureIntegration(toggleIntegration.dataset.toggleIntegration);return}
+  const advancedDelete=event.target.closest('[data-advanced-delete]');if(advancedDelete&&confirm('Excluir este item?')){const [kind,itemId]=advancedDelete.dataset.advancedDelete.split(':'),paths={workflows:'workflows',automations:'automations',knowledge:'knowledge','integration-connections':'integration-connections'};try{await apiRequest(`/api/${paths[kind]}/${encodeURIComponent(itemId)}`,{method:'DELETE',body:'{}'});await loadAdvancedData();toast('Item excluído');render()}catch(error){toast(error.message,'error')}return}
+  const automationToggle=event.target.closest('[data-automation-toggle]');if(automationToggle){const rule=advancedData.automations.find(item=>item.id===automationToggle.dataset.automationToggle);try{await apiRequest(`/api/automations/${encodeURIComponent(rule.id)}`,{method:'PATCH',body:JSON.stringify({enabled:rule.enabled===false})});await loadAdvancedData();toast(rule.enabled===false?'Automação ativada':'Automação pausada');render()}catch(error){toast(error.message,'error')}return}
   const deleteAccount=event.target.closest('[data-delete-account]');if(deleteAccount&&confirm('Desativar este acesso? As sessões abertas serão encerradas.')){const response=await fetch(`/api/auth/accounts/${encodeURIComponent(deleteAccount.dataset.deleteAccount)}`,{method:'DELETE'}),result=await response.json();if(!response.ok){toast(result.error,'error');return}await load();return}
   const choose=event.target.closest('[data-select-project]');if(choose){selectedProject=choose.dataset.selectProject;localStorage.setItem('orbit.project',selectedProject);route='board';location.hash='board';render();return}
   if(event.target.closest('[data-worklog]')){modal={type:'worklog'};render();return}
@@ -296,6 +339,7 @@ app.addEventListener('submit',async event=>{
   event.preventDefault();
   if(event.target.matches('[data-auth-form]')){const data=Object.fromEntries(new FormData(event.target)),setup=event.target.dataset.authMode==='setup',response=await fetch(setup?'/api/auth/setup':'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}),result=await response.json();if(!response.ok){renderAuthScreen(setup,result.error||'Não foi possível entrar.');return}await load();return}
   if(event.target.matches('[data-comment-form]')){const input=event.target.comment,text=input.value.trim();if(!text)return;const i=state.issues.find(x=>x.id===selectedIssue);i.comments.push({id:id('c'),author:state.currentUser,text,date:new Date().toISOString()});addActivity(`comentou em ${i.key}`);persist('Comentário adicionado');render();return}
+  if(event.target.matches('[data-advanced-form]')){const data=Object.fromEntries(new FormData(event.target)),kind=event.target.dataset.advancedForm;try{if(kind==='workflow'){const states=data.states.split(',').map(value=>value.trim()).filter(Boolean),transitions=states.slice(0,-1).map((from,index)=>({id:`${from}-${states[index+1]}`,name:`${from} → ${states[index+1]}`,from,to:states[index+1],validators:[],postFunctions:[]}));await apiRequest('/api/workflows',{method:'POST',body:JSON.stringify({name:data.name,projectId:data.projectId||null,states,transitions})})}if(kind==='automation')await apiRequest('/api/automations',{method:'POST',body:JSON.stringify({name:data.name,trigger:{type:data.trigger},conditions:[{field:data.field,operator:'equals',value:data.value}],actions:[{type:'add-label',value:data.label}]})});if(kind==='knowledge')await apiRequest('/api/knowledge',{method:'POST',body:JSON.stringify({title:data.title,type:data.type,projectId:data.projectId||null,content:data.content})});if(kind==='integration')await apiRequest('/api/integration-connections',{method:'POST',body:JSON.stringify({provider:data.provider,endpoint:data.endpoint,secret:data.secret,active:true})});event.target.reset();await loadAdvancedData();toast('Item criado com sucesso');render()}catch(error){toast(error.message,'error')}return}
   if(!event.target.matches('[data-modal-form]'))return;
   const data=Object.fromEntries(new FormData(event.target)); const type=event.target.dataset.modalType;
   if(type==='account'){const response=await fetch('/api/auth/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}),result=await response.json();if(!response.ok){toast(result.error,'error');return}modal=null;await load();toast('Acesso criado');return}
