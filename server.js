@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const config = require('./src/config');
 const { createStorage } = require('./src/storage');
 const { createAuth } = require('./src/auth');
+const { createResourceApi } = require('./src/resource-api');
 
 const PORT = config.port;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -107,6 +108,8 @@ function parseBody(req) {
   });
 }
 
+const handleResourceApi = createResourceApi({ storage, parseBody, json });
+
 function serveStatic(req, res, pathname) {
   const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const file = path.resolve(PUBLIC_DIR, requested);
@@ -145,6 +148,10 @@ const server = http.createServer(async (req, res) => {
     const accountRoute=url.pathname.match(/^\/api\/auth\/accounts\/([^/]+)$/);
     if(accountRoute&&req.method==='PUT'){if(account.roleId!=='admin')return json(res,403,{error:'Acesso restrito a administradores.'});const data=await parseBody(req);return json(res,200,await auth.updateRole(decodeURIComponent(accountRoute[1]),data.roleId))}
     if(accountRoute&&req.method==='DELETE'){if(account.roleId!=='admin')return json(res,403,{error:'Acesso restrito a administradores.'});return json(res,200,await auth.deactivate(decodeURIComponent(accountRoute[1]),account.id))}
+    if (/^\/api\/(projects|issues)(\/|$)/.test(url.pathname)) {
+      await handleResourceApi(req, res, url, account);
+      return;
+    }
     if (url.pathname === '/api/state' && req.method === 'GET') {const state=await storage.getState();return json(res,200,{...state,currentUser:account.memberId})}
     if (url.pathname === '/api/state' && req.method === 'PUT') {
       if (account.roleId==='viewer') return json(res,403,{error:'Seu perfil possui acesso somente para leitura.'});
