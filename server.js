@@ -14,6 +14,7 @@ const { createSearchAutomationApi } = require('./src/search-automation-api');
 const { createCollaborationAdminApi } = require('./src/collaboration-admin-api');
 const { createEcosystemApi } = require('./src/ecosystem-api');
 const { createAiApi } = require('./src/ai-api');
+const { createGitHubApi, verifyWebhook } = require('./src/github-api');
 
 const PORT = config.port;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -98,9 +99,11 @@ function writeState(state) {
 }
 
 function json(res, status, data, headers={}) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', ...headers });
   res.end(JSON.stringify(data));
 }
+
+function rawBody(req) { return new Promise((resolve, reject) => { const chunks=[];let size=0;req.on('data',chunk=>{size+=chunk.length;if(size>2_000_000){reject(Object.assign(new Error('Payload muito grande'),{statusCode:413}));req.destroy();return}chunks.push(chunk)});req.on('end',()=>resolve(Buffer.concat(chunks)));req.on('error',reject) }); }
 
 function parseBody(req) {
   return new Promise((resolve, reject) => {
@@ -125,13 +128,16 @@ const handleSearchAutomationApi = createSearchAutomationApi({ storage, parseBody
 const handleCollaborationAdminApi = createCollaborationAdminApi({ storage, parseBody, json });
 const handleEcosystemApi = createEcosystemApi({ storage, parseBody, json });
 const handleAiApi = createAiApi({ storage, parseBody, json });
+const handleGitHubApi = createGitHubApi({ storage, parseBody, json });
+const requestBuckets = new Map();
+function rateAllowed(req) { const key=req.socket.remoteAddress||'local',now=Date.now(),recent=(requestBuckets.get(key)||[]).filter(time=>now-time<60_000);if(recent.length>=300)return false;recent.push(now);requestBuckets.set(key,recent);return true; }
 
 function serveStatic(req, res, pathname) {
   const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const file = path.resolve(PUBLIC_DIR, requested);
   if (!file.startsWith(PUBLIC_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return false;
   const type = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png' }[path.extname(file)] || 'application/octet-stream';
-  res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
+  res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-store, max-age=0', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; script-src 'self'; base-uri 'self'; frame-ancestors 'none'" });
   fs.createReadStream(file).pipe(res);
   return true;
 }
@@ -139,7 +145,9 @@ function serveStatic(req, res, pathname) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
+    if (!rateAllowed(req)) return json(res, 429, { error: 'Muitas requisições. Aguarde um minuto.' }, { 'Retry-After': '60' });
     if (url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'Orbit Projects' });
+    if (url.pathname === '/api/github/webhook' && req.method === 'POST') { const raw=await rawBody(req);if(!config.githubWebhookSecret)return json(res,503,{error:'Webhook do GitHub ainda não configurado.'});if(!verifyWebhook(req.headers['x-hub-signature-256'],raw))return json(res,401,{error:'Assinatura do webhook inválida.'});const payload=JSON.parse(raw.toString('utf8')),eventType=req.headers['x-github-event']||'unknown',state=await storage.getState(),text=payload.head_commit?.message||payload.pull_request?.title||payload.workflow_run?.name||payload.ref||eventType,keys=[...new Set(String(text).match(/[A-Z][A-Z0-9]+-\d+/g)||[])];state.devopsEvents=state.devopsEvents||[];state.devopsEvents.unshift({id:`github_${crypto.randomUUID()}`,externalId:req.headers['x-github-delivery'],provider:'GitHub',type:eventType,title:String(text).slice(0,500),url:payload.pull_request?.html_url||payload.workflow_run?.html_url||payload.repository?.html_url,status:payload.action||payload.workflow_run?.conclusion||null,issueIds:state.issues.filter(issue=>keys.includes(issue.key)).map(issue=>issue.id),createdAt:new Date().toISOString()});await storage.saveState(state,Number(state.meta.version));return json(res,202,{accepted:true});}
     if (url.pathname === '/api/auth/me' && req.method === 'GET') {
       if (!auth) return json(res, 200, { authenticated:true, setupRequired:false, account:{name:'Usuário local',roleId:'admin',memberId:'u1'} });
       const account=await auth.authenticate(req);return json(res,200,{authenticated:!!account,setupRequired:account?false:await auth.setupRequired(),account});
@@ -209,6 +217,7 @@ const server = http.createServer(async (req, res) => {
       if (!res.headersSent) json(res, 405, { error: 'Método não permitido para esta rota.' });
       return;
     }
+    if (/^\/api\/github\//.test(url.pathname)) { await handleGitHubApi(req,res,url,account);if(!res.headersSent)json(res,405,{error:'Método não permitido para esta rota.'});return; }
     if (url.pathname === '/api/state' && req.method === 'GET') {const state=await storage.getState();return json(res,200,{...state,currentUser:account.memberId})}
     if (url.pathname === '/api/state' && req.method === 'PUT') {
       if (account.roleId==='viewer') return json(res,403,{error:'Seu perfil possui acesso somente para leitura.'});

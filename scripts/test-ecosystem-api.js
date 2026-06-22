@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { createEcosystemApi } = require('../src/ecosystem-api');
+const { decrypt } = require('../src/secret-vault');
 let state = { meta: { version: 1 }, currentUser: 'u1', activity: [], projects: [{ id: 'p1', key: 'ORB', archived: false }], issues: [{ id: 'i1', key: 'ORB-1', projectId: 'p1', status: 'todo', points: 5 }], knowledgePages: [] };
 const storage = { async getState() { return structuredClone(state); }, async saveState(next, expected) { assert.equal(expected, state.meta.version); next.meta.version = expected + 1; state = structuredClone(next); return structuredClone(state); } };
 const json = (res, status, data) => Object.assign(res, { status, data });
@@ -12,7 +13,7 @@ async function run() {
   response = await call('POST', '/api/devops/events', { provider: 'GitHub', type: 'pull-request', title: 'Corrige ORB-1', url: 'https://github.com/example/pr/1' }); assert.deepEqual(response.data.event.issueIds, ['i1']);
   response = await call('POST', '/api/api-keys', { name: 'Power BI', scopes: ['read'] }); assert.match(response.data.token, /^orb_/); assert.equal(response.data.apiKey.tokenHash, undefined); assert.ok(state.apiKeys[0].tokenHash);
   response = await call('POST', '/api/test-cases', { name: 'Login válido', steps: ['Abrir', 'Autenticar'], expected: 'Dashboard' }); assert.equal(response.status, 201);
-  response = await call('POST', '/api/integration-connections', { provider: 'Slack', secret: 'segredo', active: true }); assert.equal(response.data.item.secretHash, undefined); assert.ok(state.integrationConnections[0].secretHash);
+  response = await call('POST', '/api/integration-connections', { provider: 'Slack', secret: 'segredo', active: true }); assert.equal(response.data.item.secretCipher, undefined); assert.equal(response.data.item.secretConfigured, true); assert.ok(state.integrationConnections[0].secretCipher); assert.equal(decrypt(state.integrationConnections[0].secretCipher), 'segredo');
   response = await call('POST', '/api/marketplace/installations', { app: 'Gantt', enabled: true }); assert.equal(response.status, 201);
   await call('POST', '/api/portfolios', { name: 'Portfólio Digital', projectIds: ['p1'] });
   await call('POST', '/api/capacity-plans', { teamId: 't1', capacity: 40, period: '2026-Q3' });

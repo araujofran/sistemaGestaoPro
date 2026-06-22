@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+process.env.AI_PROVIDER = 'local';
+process.env.GEMINI_API_KEY = '';
 const { createAiApi } = require('../src/ai-api');
 let state = { meta: { version: 1 }, currentUser: 'u1', projects: [{ id: 'p1', key: 'ORB' }], members: [{ id: 'u1', name: 'Ana' }], issues: [{ id: 'i1', key: 'ORB-1', projectId: 'p1', title: 'Corrigir login', description: 'Falha de autenticação', type: 'bug', priority: 'high', status: 'todo', assignee: 'u1', reporter: 'u1', sprintId: null, points: 5, labels: ['security'], comments: [{ author: 'u1', text: 'Reproduzido no ambiente de teste.' }], worklogs: [{ minutes: 30 }] }] };
 const storage = { async getState() { return structuredClone(state); }, async saveState(next, expected) { assert.equal(expected, state.meta.version); next.meta.version = expected + 1; state = structuredClone(next); return structuredClone(state); } };
