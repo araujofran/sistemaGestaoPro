@@ -70,6 +70,10 @@ O comando cria um PostgreSQL isolado na porta `5433`, gera credenciais aleatóri
 - Persistência segura em arquivo JSON no servidor
 - Layout responsivo para desktop, tablet e celular
 
+## GitHub, DevOps e produção
+
+O menu **DevOps** exibe commits, branches, Pull Requests e GitHub Actions e vincula mensagens com chaves como `ORB-142` às tarefas. Consulte [docs/GITHUB_E_DEPLOY.md](docs/GITHUB_E_DEPLOY.md) para configurar webhook assinado, Docker, PostgreSQL e CI/CD.
+
 ## Arquitetura
 
 O servidor usa apenas módulos nativos do Node.js. A interface é uma SPA em JavaScript, HTML e CSS. Os dados são gravados em `data/state.json`, criado automaticamente na primeira execução.

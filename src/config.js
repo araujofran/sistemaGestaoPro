@@ -19,4 +19,8 @@ module.exports = {
   aiApiKey: process.env.GEMINI_API_KEY || '',
   aiModel: process.env.AI_MODEL || 'gemini-2.5-flash',
   aiBaseUrl: process.env.AI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
+  githubRepository: process.env.GITHUB_REPOSITORY || 'araujofran/sistemaGestaoPro',
+  githubToken: process.env.GITHUB_TOKEN || '',
+  githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET || '',
+  integrationEncryptionKey: process.env.INTEGRATION_ENCRYPTION_KEY || process.env.SESSION_SECRET || '',
 };
